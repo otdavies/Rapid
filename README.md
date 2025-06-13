@@ -1,6 +1,6 @@
-# RAPID: Relational Abstract Programmatic Insight Discovery
+# RAPID: **R**apid **A**lignment of **P**roject **I**ntelligence and **D**iscovery
 
-RAPID (Relational Abstract Programmatic Insight Discovery) is a local MCP server designed to provide powerful code analysis and search capabilities for any software project. It leverages a high-performance Rust-based file scanner to quickly parse and analyze code, exposing a set of tools that can be used by any MCP-compliant client.
+RAPID is a local MCP server designed to provide powerful code analysis and search capabilities for any software project. It leverages a high-performance Rust-based file scanner to quickly parse and analyze code, exposing a set of tools that can be used by any MCP-compliant client.
 
 This server is ideal for AI assistants and development tools that need to understand the context of a codebase to perform tasks like code generation, refactoring, and automated documentation.
 
