@@ -14,7 +14,7 @@ from mcp.server.models import InitializationOptions
 import mcp.server.stdio
 import mcp.types as types
 
-from logic.tool_implementations import get_full_context_impl, project_wide_search_impl
+from logic.tool_implementations import get_full_context_impl, project_wide_search_impl, concept_search_impl
 
 
 class ProjectContextServer:
@@ -39,6 +39,7 @@ class ProjectContextServer:
         return [
             self._get_full_context_tool_definition(),
             self._get_project_wide_search_tool_definition(),
+            self._get_concept_search_tool_definition(),
         ]
 
     def _get_project_wide_search_tool_definition(self) -> types.Tool:
@@ -135,6 +136,40 @@ class ProjectContextServer:
             }
         )
 
+    def _get_concept_search_tool_definition(self) -> types.Tool:
+        """Returns the definition for the 'concept_search' tool."""
+        return types.Tool(
+            name="concept_search",
+            description="Perform a semantic search for functions based on a natural language query.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute path to the project directory."
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "A natural language description of the functionality to find."
+                    },
+                    "extensions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "File extensions to scan. Defaults to common code extensions."
+                    },
+                    "top_n": {
+                        "type": "integer",
+                        "description": "Number of top results to return. Default is 10."
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Timeout in seconds for the operation. Default is 20."
+                    }
+                },
+                "required": ["path", "query"]
+            }
+        )
+
     async def call_tool(
         self, name: str, arguments: Optional[Dict[str, Any]]
     ) -> List[types.TextContent]:
@@ -144,6 +179,8 @@ class ProjectContextServer:
                 result = await get_full_context_impl(arguments or {})
             elif name == "project_wide_search":
                 result = await project_wide_search_impl(arguments or {})
+            elif name == "concept_search":
+                result = await concept_search_impl(arguments or {})
             else:
                 result = {"status": "error", "error": f"Unknown tool: {name}"}
 

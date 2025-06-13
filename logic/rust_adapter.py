@@ -1,5 +1,6 @@
 import ctypes
 import json
+import platform
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -11,21 +12,28 @@ from typing import Optional, Dict, Any
 def find_rust_library() -> Optional[Path]:
     """
     Finds the Rust library, checking for release and debug builds.
-    The path is constructed relative to this script's location.
+    The path is constructed relative to this script's location and is OS-aware.
     """
-    base_path = Path(
-        __file__).parent.parent  # Moves up two levels to project root
+    base_path = Path(__file__).parent.parent  # Moves up to the project root
 
-    # Look for the 'file_scanner' directory, which is at the root.
+    # Determine OS-specific library name
+    system = platform.system()
+    if system == "Windows":
+        lib_name = "file_scanner.dll"
+    elif system == "Darwin":  # macOS
+        lib_name = "libfile_scanner.dylib"
+    else:  # Linux and other UNIX-like
+        lib_name = "libfile_scanner.so"
+
     scanner_path = base_path / "file_scanner"
 
     # Check for release build first
-    release_path = scanner_path / "target" / "release" / "file_scanner.dll"
+    release_path = scanner_path / "target" / "release" / lib_name
     if release_path.exists():
         return release_path
 
     # Fallback to debug build
-    debug_path = scanner_path / "target" / "debug" / "file_scanner.dll"
+    debug_path = scanner_path / "target" / "debug" / lib_name
     if debug_path.exists():
         return debug_path
 
@@ -184,5 +192,76 @@ def invoke_rust_searcher(
     finally:
         del rust_lib
         pass
+
+def invoke_rust_concept_searcher(
+    project_path_str: str,
+    query_str: str,
+    extensions_str: str,
+    top_n: int,
+    timeout_ms: int
+) -> Dict[str, Any]:
+    """
+    Loads the Rust library, calls the concept_search function, and returns the result.
+    """
+    lib_path = find_rust_library()
+
+    if not lib_path:
+        return {"error": "Rust library not found.", "results": [], "stats": {}}
+
+    try:
+        rust_lib = ctypes.CDLL(str(lib_path))
+    except OSError as e:
+        return {"error": f"Failed to load Rust library: {e}", "results": [], "stats": {}}
+
+    try:
+        rust_lib.concept_search.argtypes = [
+            ctypes.c_char_p,  # root_path_c
+            ctypes.c_char_p,  # query_c
+            ctypes.c_char_p,  # extensions_c
+            ctypes.c_size_t,  # top_n_c
+            ctypes.c_uint32   # timeout_ms_c
+        ]
+        rust_lib.concept_search.restype = ctypes.c_void_p
+        rust_lib.free_string.argtypes = [ctypes.c_void_p]
+        rust_lib.free_string.restype = None
+
+        root_path_c = ctypes.c_char_p(project_path_str.encode('utf-8'))
+        query_c = ctypes.c_char_p(query_str.encode('utf-8'))
+        extensions_c = ctypes.c_char_p(extensions_str.encode('utf-8'))
+        top_n_c = ctypes.c_size_t(top_n)
+        timeout_ms_c = ctypes.c_uint32(timeout_ms)
+
+        result_ptr = rust_lib.concept_search(
+            root_path_c, query_c, extensions_c, top_n_c, timeout_ms_c)
+
+        if not result_ptr:
+            rust_lib.free_string(result_ptr)
+            return {"results": [], "stats": {}, "debug_log": ["Rust concept_search returned null pointer."]}
+
+        value = ctypes.cast(result_ptr, ctypes.c_char_p).value
+        json_string = value.decode('utf-8') if value else ""
+
+        rust_lib.free_string(result_ptr)
+
+        if not json_string:
+            return {"results": [], "stats": {}, "debug_log": ["Rust concept_search returned empty string after decode."]}
+
+        try:
+            result_data = json.loads(json_string)
+            return result_data
+        except json.JSONDecodeError as e:
+            return {"error": f"Failed to parse JSON response from Rust: {e}",
+                    "raw_response": json_string,
+                    "results": [],
+                    "stats": {}}
+
+    except Exception as e:
+        return {"error": f"An unexpected error occurred while interacting with the Rust library: {e}",
+                "results": [],
+                "stats": {}}
+    finally:
+        del rust_lib
+        pass
+
 
 # Removed the if __name__ == "__main__": block as this module will be imported.

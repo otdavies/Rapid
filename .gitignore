@@ -6,6 +6,7 @@ __pycache__/
 .venv/
 env/
 .pytest_cache/
+.cache/
 
 # Rust
 target/

@@ -1,6 +1,11 @@
+use anyhow::Context;
+use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use ignore::WalkBuilder;
+use once_cell::sync::OnceCell;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::ffi::{CStr, CString};
+use tracing_subscriber::{fmt, EnvFilter};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::os::raw::c_char;
@@ -12,14 +17,14 @@ use tree_sitter::{Parser, Query, QueryCursor};
 
 // --- Data Structures for Parsed Content ---
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct FunctionInfo {
     name: String,
     body: Option<String>,
     comment: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct FileContext {
     path: String,
     description: String,
@@ -62,6 +67,77 @@ struct SearchStats {
     timed_out: bool,
 }
 
+// --- Data Structures for Concept Search ---
+
+#[derive(Serialize, Deserialize, Debug)]
+struct ConceptSearchResultItem {
+    file: String,
+    function: String,
+    similarity: f32,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct ConceptSearchServiceResult {
+    results: Vec<ConceptSearchResultItem>,
+    stats: ConceptSearchStats,
+    error: Option<String>,
+    debug_log: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default)]
+struct ConceptSearchStats {
+    functions_analyzed: usize,
+    search_duration_seconds: f32,
+}
+
+static MODEL: OnceCell<TextEmbedding> = OnceCell::new();
+
+fn initialize_model(cache_dir: &Path) -> Result<TextEmbedding, anyhow::Error> {
+    // --- Tracing setup ---
+    let log_buffer = Arc::new(Mutex::new(Vec::new()));
+    let log_buffer_clone = Arc::clone(&log_buffer);
+
+    struct LogWriter {
+        buffer: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl std::io::Write for LogWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let mut guard = self.buffer.lock().unwrap();
+            guard.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let make_writer = move || LogWriter {
+        buffer: Arc::clone(&log_buffer_clone),
+    };
+
+    let subscriber = fmt()
+        .with_writer(make_writer)
+        .with_env_filter(EnvFilter::from_default_env().add_directive("hf-hub=trace".parse()?))
+        .finish();
+
+    let _guard = tracing::subscriber::set_default(subscriber);
+    // --- End Tracing Setup ---
+
+    // --- Cache and Environment Setup ---
+    fs::create_dir_all(&cache_dir)?;
+    std::env::set_var("HF_HOME", cache_dir.to_str().unwrap());
+    // --- End Cache and Environment Setup ---
+
+    TextEmbedding::try_new(InitOptions::new(EmbeddingModel::BGEBaseENV15).with_show_download_progress(true))
+        .with_context(|| {
+            let logs = String::from_utf8_lossy(&log_buffer.lock().unwrap()).to_string();
+            format!("Failed to initialize TextEmbedding model. Logs:\n{}", logs)
+        })
+}
+
+
 // --- Tree-sitter Parser Setup ---
 
 fn get_parser(extension: &str) -> Option<Parser> {
@@ -80,79 +156,56 @@ fn get_parser(extension: &str) -> Option<Parser> {
 fn get_query(extension: &str, compactness: u8) -> Option<String> {
     let query_str = match extension {
         "cs" => match compactness {
-            0 => r#"((method_declaration (identifier) @method_name))"#,
-            1 => r#"
+            0 => r#"((method_declaration (identifier) @method_name))"#.to_string(),
+            1 => r#"((method_declaration (identifier) @method_name body: (block) @body) @function_definition)"#.to_string(),
+            2 | 3 => r#"
                 (
                     (comment)* @comment
                     .
-                    (method_declaration (identifier) @method_name) @function_definition
+                    ((method_declaration (identifier) @method_name body: (block) @body) @function_definition)
                 )
-                "#,
-            _ => r#"
-                (method_declaration
-                    (identifier) @method_name
-                    (block) @body)
-                "#,
+                "#.to_string(),
+            _ => r#"((method_declaration (identifier) @method_name) @function_definition)"#.to_string(),
         },
         "py" => match compactness {
-            0 => r#"((function_definition name: (identifier) @method_name))"#,
-            1 => r#"
+            0 => r#"((function_definition name: (identifier) @method_name))"#.to_string(),
+            1 => r#"((function_definition name: (identifier) @method_name body: (block) @body) @function_definition)"#.to_string(),
+            2 | 3 => r#"
                 (
                     (comment)* @comment
                     .
-                    (function_definition name: (identifier) @method_name)
+                    ((function_definition name: (identifier) @method_name body: (block) @body) @function_definition)
                 )
-                "#,
-            _ => r#"
-                (function_definition
-                    name: (identifier) @method_name
-                    body: (block) @body)
-                "#,
+                "#.to_string(),
+            _ => r#"((function_definition name: (identifier) @method_name) @function_definition)"#.to_string(),
         },
         "rs" => match compactness {
-            0 => r#"((function_item name: (identifier) @method_name))"#,
-            1 => r#"
+            0 => r#"((function_item name: (identifier) @method_name))"#.to_string(),
+            1 => r#"((function_item name: (identifier) @method_name body: (block) @body) @function_definition)"#.to_string(),
+            2 | 3 => r#"
                 (
                     (line_comment)* @comment
                     .
-                    (function_item name: (identifier) @method_name)
+                    ((function_item name: (identifier) @method_name body: (block) @body) @function_definition)
                 )
-                "#,
-            _ => r#"
-                (function_item
-                    name: (identifier) @method_name
-                    body: (block) @body)
-                "#,
+                "#.to_string(),
+            _ => r#"((function_item name: (identifier) @method_name) @function_definition)"#.to_string(),
         },
-        "ts" => match compactness {
-            0 => r#"
-                (function_declaration name: (identifier) @method_name)
-                (method_definition name: (property_identifier) @method_name)
-                "#,
-            1 => r#"
-                (
-                    (comment)* @comment
-                    .
-                    (function_declaration name: (identifier) @method_name)
-                )
-                (
-                    (comment)* @comment
-                    .
-                    (method_definition name: (property_identifier) @method_name)
-                )
-                "#,
-            _ => r#"
-                (function_declaration
-                    name: (identifier) @method_name
-                    body: (statement_block) @body)
-                (method_definition
-                    name: (property_identifier) @method_name
-                    body: (statement_block) @body)
-                "#,
-        },
+        "ts" => {
+            let base_queries = [
+                ("function_declaration", "identifier", "statement_block"),
+                ("method_definition", "property_identifier", "statement_block"),
+            ];
+            match compactness {
+                0 => base_queries.iter().map(|(node, name_field, _)| format!("(({} name: ({}) @method_name))", node, name_field)).collect::<Vec<_>>().join("\n"),
+                1 => base_queries.iter().map(|(node, name_field, body_field)| format!("(({} name: ({}) @method_name body: ({}) @body) @function_definition)", node, name_field, body_field)).collect::<Vec<_>>().join("\n"),
+                2 | 3 => base_queries.iter().map(|(node, name_field, body_field)| format!("((comment)* @comment . (({} name: ({}) @method_name body: ({}) @body) @function_definition))", node, name_field, body_field)).collect::<Vec<_>>().join("\n"),
+                _ => base_queries.iter().map(|(node, name_field, _)| format!("(({} name: ({}) @method_name) @function_definition)", node, name_field)).collect::<Vec<_>>().join("\n"),
+            }
+        }
         _ => return None,
     };
-    Some(query_str.to_string())
+    Some(query_str)
 }
 
 // --- Core Scanning and Parsing Logic ---
@@ -182,28 +235,55 @@ fn parse_file(path: &Path, compactness: u8) -> Option<FileContext> {
 
     for mat in matches {
         let mut name = "".to_string();
-        let mut body = None;
-        let mut comment = None;
+        let mut comment: Option<String> = None;
+        
+        let mut function_definition_node: Option<tree_sitter::Node> = None;
+        let mut body_node: Option<tree_sitter::Node> = None;
 
         for cap in mat.captures {
             let capture_name = query.capture_names()[cap.index as usize].as_str();
-            let text = std::str::from_utf8(&code.as_bytes()[cap.node.byte_range()])
-                .unwrap_or("")
-                .to_string();
+            let node = cap.node;
+            
             match capture_name {
-                "method_name" => name = text,
-                "body" => body = Some(text),
-                "comment" => comment = Some(text),
-                "function_definition" => body = Some(text),
+                "method_name" => {
+                    name = std::str::from_utf8(&code.as_bytes()[node.byte_range()]).unwrap_or("").to_string();
+                }
+                "comment" => {
+                    comment = Some(std::str::from_utf8(&code.as_bytes()[node.byte_range()]).unwrap_or("").to_string());
+                }
+                "function_definition" => function_definition_node = Some(node),
+                "body" => body_node = Some(node),
                 _ => {}
             }
         }
 
         if !name.is_empty() {
+            let body = match compactness {
+                1 | 2 => { // Signature only
+                    if let (Some(def_node), Some(body_node)) = (function_definition_node, body_node) {
+                        let body_start = body_node.start_byte();
+                        let def_start = def_node.start_byte();
+                        if body_start > def_start {
+                            Some(code[def_start..body_start].trim().to_string())
+                        } else {
+                            None
+                        }
+                    } else if let Some(def_node) = function_definition_node {
+                        Some(std::str::from_utf8(&code.as_bytes()[def_node.byte_range()]).unwrap_or("").to_string())
+                    } else {
+                        None
+                    }
+                }
+                3 => { // Full function
+                    function_definition_node.map(|node| std::str::from_utf8(&code.as_bytes()[node.byte_range()]).unwrap_or("").to_string())
+                }
+                _ => None, // Level 0 has no body, and default case.
+            };
+
             functions.push(FunctionInfo {
                 name,
                 body,
-                comment,
+                comment: if compactness == 2 || compactness == 3 { comment } else { None },
             });
         }
     }
@@ -216,6 +296,77 @@ fn parse_file(path: &Path, compactness: u8) -> Option<FileContext> {
 }
 
 // --- FFI Interface ---
+
+fn perform_scan(
+    root_path_str: &str,
+    extensions: Vec<String>,
+    compactness_level: u8,
+    timeout_milliseconds: u32,
+) -> ScanResult {
+    let start_time = Instant::now();
+    let mut debug_log: Vec<String> = Vec::new();
+
+    debug_log.push(format!("Scanning root path: {}", root_path_str));
+    debug_log.push(format!("Extensions to scan: {:?}", extensions));
+
+    let root_path = Path::new(root_path_str);
+    let mut walker_builder = WalkBuilder::new(root_path);
+    walker_builder.git_ignore(true).git_global(true);
+
+    let walker = walker_builder.build();
+
+    let (tx, rx) = std::sync::mpsc::channel::<FileContext>();
+    let debug_log_arc = Arc::new(Mutex::new(debug_log));
+    let timed_out_internally_flag = Arc::new(AtomicBool::new(false));
+    let files_processed_count = Arc::new(AtomicUsize::new(0));
+    let file_contexts = Arc::new(Mutex::new(Vec::new()));
+    for entry in walker {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(err) => {
+                debug_log_arc.lock().unwrap().push(format!("Error walking directory: {}", err));
+                continue;
+            }
+        };
+
+        let path = entry.path();
+        if path.is_file() {
+            files_processed_count.fetch_add(1, Ordering::Relaxed);
+            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+            debug_log_arc.lock().unwrap().push(format!("Processing file: {:?}, extension: {}", path, ext));
+
+            if !extensions.iter().any(|e| e.trim_start_matches('.') == ext) {
+                debug_log_arc.lock().unwrap().push(format!("Skipping file due to extension mismatch: {:?}", path));
+                continue;
+            }
+
+            if let Some(context) = parse_file(path, compactness_level) {
+                if !context.functions.is_empty() {
+                    file_contexts.lock().unwrap().push(context);
+                } else {
+                    debug_log_arc.lock().unwrap().push(format!("No functions found in: {:?}", path));
+                }
+            } else {
+                debug_log_arc.lock().unwrap().push(format!("Failed to parse file: {:?}", path));
+            }
+        }
+    }
+
+    let file_contexts = file_contexts.lock().unwrap().to_vec();
+    let final_files_processed_count = files_processed_count.load(Ordering::Relaxed);
+    let was_timed_out = timed_out_internally_flag.load(Ordering::Relaxed) || 
+                        (start_time.elapsed().as_millis() as u32 > timeout_milliseconds && timeout_milliseconds > 0);
+
+    let final_debug_log_vec = debug_log_arc.lock().unwrap().drain(..).collect();
+
+    ScanResult {
+        file_contexts,
+        debug_log: final_debug_log_vec,
+        timed_out_internally: was_timed_out,
+        files_processed_before_timeout: final_files_processed_count,
+    }
+}
+
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn scan_and_parse(
@@ -444,6 +595,118 @@ Thumbs.db
 
     CString::new(json_output).map_or(std::ptr::null_mut(), |s| s.into_raw())
 }
+
+fn concept_search_inner(
+    root_path_str: &str,
+    query_str: &str,
+    extensions: Vec<String>,
+    top_n: usize,
+    timeout_ms: u32,
+) -> Result<ConceptSearchServiceResult, anyhow::Error> {
+    let start_time = Instant::now();
+    let cache_dir = Path::new(root_path_str).join("file_scanner").join(".cache");
+
+    // 1. Get all functions
+    let scan_result = perform_scan(root_path_str, extensions, 3, timeout_ms);
+    let debug_log = scan_result.debug_log.clone();
+    let documents: Vec<String> = scan_result.file_contexts.iter().flat_map(|fc| {
+        fc.functions.iter().map(|f| {
+            format!("Function: {}\nFile: {}\nBody:\n{}", f.name, fc.path, f.body.as_deref().unwrap_or(""))
+        })
+    }).collect();
+    let doc_identifiers: Vec<_> = scan_result.file_contexts.iter().flat_map(|fc| {
+        fc.functions.iter().map(move |f| (fc.path.clone(), f.name.clone()))
+    }).collect();
+
+    if documents.is_empty() {
+        return Ok(ConceptSearchServiceResult {
+            results: vec![],
+            stats: ConceptSearchStats {
+                functions_analyzed: 0,
+                search_duration_seconds: start_time.elapsed().as_secs_f32(),
+            },
+            error: Some("No documents were found to embed. The initial scan may have found no functions.".to_string()),
+            debug_log,
+        });
+    }
+
+    // 2. Embed query and documents
+    let model = MODEL.get_or_try_init(|| initialize_model(&cache_dir))?;
+
+    let mut query_embeddings = model.embed(vec![query_str.to_string()], None)?;
+    if query_embeddings.is_empty() {
+        return Err(anyhow::anyhow!("Failed to embed query string."));
+    }
+    let query_embedding = query_embeddings.remove(0);
+
+    let doc_embeddings = model.embed(documents, None)?;
+
+    // 3. Cosine similarity
+    let mut similarities: Vec<(usize, f32)> = doc_embeddings
+        .par_iter()
+        .enumerate()
+        .map(|(i, doc_emb)| {
+            let sim = cosine_similarity(&query_embedding, doc_emb);
+            (i, sim)
+        })
+        .collect();
+
+    similarities.par_sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    // 4. Get top N results
+    let results: Vec<ConceptSearchResultItem> = similarities.iter().take(top_n).map(|(idx, sim)| {
+        ConceptSearchResultItem {
+            file: doc_identifiers[*idx].0.clone(),
+            function: doc_identifiers[*idx].1.clone(),
+            similarity: *sim,
+        }
+    }).collect();
+
+    Ok(ConceptSearchServiceResult {
+        results,
+        stats: ConceptSearchStats {
+            functions_analyzed: doc_identifiers.len(),
+            search_duration_seconds: start_time.elapsed().as_secs_f32(),
+        },
+        error: None,
+        debug_log,
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn concept_search(
+    root_path_c: *const c_char,
+    query_c: *const c_char,
+    extensions_c: *const c_char,
+    top_n_c: usize,
+    timeout_ms_c: u32,
+) -> *mut c_char {
+    let root_path_str = CStr::from_ptr(root_path_c).to_str().unwrap_or("");
+    let query_str = CStr::from_ptr(query_c).to_str().unwrap_or("");
+    let extensions_str = CStr::from_ptr(extensions_c).to_str().unwrap_or("");
+    let extensions: Vec<String> = extensions_str.split(',').map(|s| s.trim().to_string()).collect();
+
+    let result = match concept_search_inner(root_path_str, query_str, extensions, top_n_c, timeout_ms_c) {
+        Ok(res) => res,
+        Err(e) => ConceptSearchServiceResult {
+            results: vec![],
+            stats: ConceptSearchStats::default(),
+            error: Some(format!("{:?}", e)), // Use detailed error format
+            debug_log: vec![e.to_string()],
+        },
+    };
+
+    let json_output = serde_json::to_string(&result).unwrap();
+    CString::new(json_output).unwrap().into_raw()
+}
+
+fn cosine_similarity(v1: &[f32], v2: &[f32]) -> f32 {
+    let dot_product: f32 = v1.iter().zip(v2).map(|(a, b)| a * b).sum();
+    let norm_v1: f32 = v1.iter().map(|x| x.powi(2)).sum::<f32>().sqrt();
+    let norm_v2: f32 = v2.iter().map(|x| x.powi(2)).sum::<f32>().sqrt();
+    dot_product / (norm_v1 * norm_v2)
+}
+
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn project_wide_search(

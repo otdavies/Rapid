@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 # Import the new direct invocation function
-from logic.rust_adapter import invoke_rust_scanner, invoke_rust_searcher
+from logic.rust_adapter import invoke_rust_scanner, invoke_rust_searcher, invoke_rust_concept_searcher
 
 
 def collect_and_parse_files_from_rust(
@@ -120,6 +120,44 @@ def search_in_files_from_rust(
             search_string=search_string,
             extensions_str=extensions_str,
             context_lines=context_lines,
+            timeout_ms=timeout_rust_ms
+        )
+
+        if "error" in raw_result:
+            return {
+                "status": "error_adapter_call",
+                "error": raw_result['error'],
+                "results": [],
+                "stats": {}
+            }
+
+        return raw_result
+
+    except Exception as ex:
+        return {
+            "status": "error_file_collection_critical",
+            "error": str(ex),
+            "results": [],
+            "stats": {}
+        }
+
+
+def concept_search_from_rust(
+    project_path: Path, query: str, extensions: List[str], top_n: int, timeout: int
+) -> Dict[str, Any]:
+    """
+    Calls the Rust library to perform a concept search.
+    """
+    timeout_rust_ms = timeout * 1000
+    project_path_str = str(project_path)
+    extensions_str = ",".join(extensions)
+
+    try:
+        raw_result = invoke_rust_concept_searcher(
+            project_path_str=project_path_str,
+            query_str=query,
+            extensions_str=extensions_str,
+            top_n=top_n,
             timeout_ms=timeout_rust_ms
         )
 

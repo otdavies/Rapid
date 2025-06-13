@@ -2,8 +2,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List
 
-from logic.file_collection import collect_and_parse_files_from_rust, search_in_files_from_rust
-from logic.context_processing import format_project_context
+from logic.file_collection import collect_and_parse_files_from_rust, search_in_files_from_rust, concept_search_from_rust
+from logic.context_processing import format_project_context, format_search_results, format_concept_search_results
 
 
 async def get_full_context_impl(args: Dict[str, Any]) -> Dict[str, Any]:
@@ -159,17 +159,85 @@ async def project_wide_search_impl(args: Dict[str, Any]) -> Dict[str, Any]:
         )
 
         duration = time.time() - start_time
-        rust_result["stats"]["search_duration_seconds"] = round(duration, 2)
+        
+        formatted_results = format_search_results(rust_result)
+        
+        final_stats = rust_result.get("stats", {})
+        final_stats["search_duration_seconds"] = round(duration, 2)
 
-        if not debug_mode and "debug_log" in rust_result:
-            del rust_result["debug_log"]
+        response = {
+            "status": "success",
+            "results": formatted_results,
+            "stats": final_stats,
+        }
 
-        return rust_result
+        if debug_mode:
+            response["debug_log"] = rust_result.get("debug_log", [])
+
+        return response
 
     except Exception as e:
         duration = time.time() - start_time
         return {
             "status": "error",
             "error": f"Critical search failed in tool_implementations: {e}",
+            "stats": {"search_duration_seconds": round(duration, 2)}
+        }
+
+
+async def concept_search_impl(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Implementation of the concept_search tool."""
+    input_path_str = args["path"]
+    query = args["query"]
+    project_path = Path(input_path_str)
+
+    if not project_path.is_absolute():
+        return {"status": "error", "error": f"Path '{input_path_str}' must be an absolute path."}
+
+    timeout_seconds = args.get("timeout", 20)
+    extensions = args.get("extensions", [".cs", ".py", ".rs", ".js", ".ts"])
+    top_n = args.get("top_n", 10)
+    debug_mode = args.get("debug", False)
+
+    try:
+        if not project_path.exists() or not project_path.is_dir():
+            return {"status": "error", "error": f"Project path '{input_path_str}' not found or not a directory"}
+    except Exception as e:
+        return {"status": "error", "error": f"Invalid project path: {e}"}
+
+    start_time = time.time()
+
+    try:
+        rust_result = concept_search_from_rust(
+            project_path, query, extensions, top_n, timeout_seconds
+        )
+        print(f"RUST_RESULT: {rust_result}")
+
+        duration = time.time() - start_time
+
+        if rust_result.get("error") is not None:
+            return {"status": "error_adapter_call", "error": rust_result["error"], "results": [], "stats": {}}
+
+        formatted_results = format_concept_search_results(rust_result)
+        
+        final_stats = rust_result.get("stats", {})
+        final_stats["search_duration_seconds"] = round(duration, 2)
+
+        response = {
+            "status": "success",
+            "results": formatted_results,
+            "stats": final_stats,
+        }
+
+        if debug_mode:
+            response["debug_log"] = rust_result.get("debug_log", [])
+
+        return response
+
+    except Exception as e:
+        duration = time.time() - start_time
+        return {
+            "status": "error",
+            "error": f"Critical concept search failed in tool_implementations: {e}",
             "stats": {"search_duration_seconds": round(duration, 2)}
         }
