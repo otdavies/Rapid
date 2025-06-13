@@ -1,120 +1,98 @@
-# Project Context MCP Server
+# Project Context Server
 
-An MCP (Model Context Protocol) server that maintains a local database of project context for LLMs. It tracks files, function signatures, and descriptions to provide rapid context without needing to read entire projects.
+The Project Context Server is a local MCP server designed to provide powerful code analysis and search capabilities for any software project. It leverages a high-performance Rust-based file scanner to quickly parse and analyze code, exposing a set of tools that can be used by any MCP-compliant client.
+
+This server is ideal for AI assistants and development tools that need to understand the context of a codebase to perform tasks like code generation, refactoring, and automated documentation.
 
 ## Features
 
-- Automatic project root detection (looks for .git, package.json, Cargo.toml, etc.)
-- Function signature extraction for Python, Rust, JavaScript, and TypeScript
-- **Automatic description extraction from code comments**
-- SQLite database for persistent context storage
-- Change detection using file hashing
-- Full-text search across functions and descriptions
-- **Complete project overview with the new `get_full_context` tool**
+- **Full Project Context Analysis:** Recursively scans a project directory to extract information about files, functions, and classes.
+- **Project-Wide Search:** Performs fast, project-wide searches for specific strings or patterns.
+- **Multi-Language Support:** Includes parsers for Python, Rust, C#, and TypeScript/JavaScript.
+- **High-Performance Rust Core:** The file scanning and parsing logic is implemented in Rust for maximum performance and efficiency.
+- **Configurable:** Allows for customization of scanning depth, file extensions, and output verbosity.
+- **MCP Compliant:** Exposes its functionality through a set of well-defined MCP tools.
 
-## Quick Installation (Windows)
+## Architecture
 
-### Option 1: Automatic Setup (Recommended)
-Simply double-click `INSTALL.bat` or run:
-```bash
-INSTALL.bat
-```
+The server is composed of two main components:
 
-### Option 2: PowerShell
-Right-click `INSTALL.ps1` and select "Run with PowerShell", or:
-```powershell
-.\INSTALL.ps1
-```
+1.  **Python MCP Server (`server.py`):** The main entry point of the server. It handles MCP requests, defines the available tools, and orchestrates the code analysis process.
+2.  **Rust File Scanner (`file_scanner/`):** A Rust library that performs the heavy lifting of file system scanning, parsing, and search. It is called by the Python server through a C FFI layer.
 
-### Option 3: Manual Setup
-```bash
-pip install -r requirements.txt
-python add_to_claude.py
-```
+This hybrid approach combines the flexibility of Python for the server logic with the performance of Rust for the CPU-intensive file processing tasks.
 
-## Usage
+## Tools
 
-### Running the Server
+The server exposes the following tools:
 
-```bash
-python server.py
-```
+### `get_full_context`
 
-### Available Tools
+Scans a project directory and returns a structured overview of the codebase.
 
-1. **scan_project** - Scan project directory for code files
-   - `path` (optional): Project directory path (auto-detects if not provided)
-   - `extensions` (optional): File extensions to scan (default: .rs, .js, .ts, .jsx, .tsx, .py)
+**Arguments:**
 
-2. **get_file_context** - Get context about a specific file
-   - `path` (required): File path relative to project root
+-   `path` (string, required): The absolute path to the project directory.
+-   `extensions` (array of strings, optional): A list of file extensions to include in the scan.
+-   `max_depth` (integer, optional): The maximum depth to scan directories.
+-   `compactness_level` (integer, optional): Controls the verbosity of the output.
 
-3. **search_functions** - Search for functions by name or description
-   - `query` (required): Search query
+### `project_wide_search`
 
-4. **get_project_overview** - Get an overview of the project structure
-   - `include_stats` (optional): Include statistics about files and functions
+Performs a project-wide search for a given string.
 
-5. **update_file_description** - Update or add a description for a file
-   - `path` (required): File path relative to project root
-   - `description` (required): Description of what the file does
+**Arguments:**
 
-6. **update_function_description** - Update or add a description for a function
-   - `file_path` (required): File path containing the function
-   - `function_name` (required): Name of the function
-   - `description` (required): Description of what the function does
+-   `path` (string, required): The absolute path to the project directory.
+-   `search_string` (string, required): The string to search for.
+-   `extensions` (array of strings, optional): A list of file extensions to search in.
+-   `context_lines` (integer, optional): The number of context lines to include in the search results.
 
-7. **get_full_context** - Get complete project context with all files and functions
-   - `include_descriptions` (optional): Include descriptions (default: true)
-   - Returns a concise overview perfect for giving LLMs rapid project understanding
+## Getting Started
 
-## Database Schema
+1.  **Install Dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
 
-The server maintains a SQLite database (`project_context.db`) with:
-- **files** table: Tracks file paths, hashes, descriptions, and update times
-- **functions** table: Stores function names, signatures, descriptions, and line numbers
+2.  **Build the Rust Scanner:**
+    ```bash
+    cd file_scanner
+    cargo build --release
+    cd ..
+    ```
 
-## How It Works
+3.  **Run the Server:**
+    ```bash
+    python server.py
+    ```
 
-1. The server scans your project directory for supported file types
-2. It parses each file to extract function signatures and descriptions from comments
-3. File hashes are used to detect changes and avoid re-parsing unchanged files
-4. All data is stored in a local SQLite database for fast retrieval
-5. LLMs can query this context without reading entire files
+The server will start and be available for any MCP-compliant client to connect to.
 
-## Enhanced Features
+## Installation
 
-### Automatic Description Extraction
-
-The server now automatically extracts descriptions from comments:
-
-- **Python**: Module docstrings and function docstrings
-- **JavaScript/TypeScript**: JSDoc comments (`/** */`) and line comments (`//`)
-- **Rust**: Doc comments (`///` and `//!`)
-
-### Complete Project Context
-
-The new `get_full_context` tool provides a concise overview of your entire project:
+To use this server with an MCP-compliant client, you need to add the following configuration to your client's settings:
 
 ```json
-{
-  "project_summary": {
-    "total_files": 10,
-    "total_functions": 45,
-    "files_with_descriptions": 8,
-    "functions_with_descriptions": 32
-  },
-  "files": [
-    {
-      "path": "server.py",
-      "description": "MCP server for maintaining project context.",
-      "functions": [
-        "async def _scan_project(...): // Scan project directory for code files",
-        "async def _get_full_context(...): // Get complete project context"
-      ]
+"mcpServers": {
+    "project-context": {
+      "autoApprove": [
+        "clear_project_context_database",
+        "get_project_overview",
+        "search_functions",
+        "get_file_context",
+        "scan_project",
+        "get_context",
+        "get_full_context"
+      ],
+      "disabled": false,
+      "timeout": 30,
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "D:\\AIProjects\\MCPServers\\project-context-server\\server.py"
+      ],
+      "env": {}
     }
-  ]
 }
 ```
-
-This gives LLMs instant understanding of your project structure without reading thousands of lines of code.
