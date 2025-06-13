@@ -1,5 +1,4 @@
-![image](https://github.com/user-attachments/assets/e1bbac2c-6ba0-480f-965c-d44e3f5b6f17)
-
+![454813373-e1bbac2c-6ba0-480f-965c-d44e3f5b6f17](https://github.com/user-attachments/assets/8cfae815-341b-4b1d-a935-e12091de9307)
 
 # R.A.P.I.D. Rapid Alignment of Project Intelligence and Documentation
 
