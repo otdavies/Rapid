@@ -1,4 +1,7 @@
-# RAPID: **R**apid **A**lignment of **P**roject **I**ntelligence and **D**iscovery
+![image](https://github.com/user-attachments/assets/e1bbac2c-6ba0-480f-965c-d44e3f5b6f17)
+
+
+# R.A.P.I.D. Rapid Alignment of Project Intelligence and Documentation
 
 RAPID is a local MCP server designed to provide powerful code analysis and search capabilities for any software project. It leverages a high-performance Rust-based file scanner to quickly parse and analyze code, exposing a set of tools that can be used by any MCP-compliant client.
 
