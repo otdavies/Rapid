@@ -62,29 +62,15 @@ Performs a project-wide search for a given string.
     cd ..
     ```
 
-3.  **Run the Server:**
-    ```bash
-    python server.py
-    ```
-
-The server will start and be available for any MCP-compliant client to connect to.
-
 ## Installation
 
-To use this server with an MCP-compliant client, you need to add the following configuration to your client's settings:
+To use this server, you need to register it with your MCP-compliant client (e.g., Claude for Desktop). This typically involves adding a configuration block to the client's settings file.
+
+Locate your MCP client's configuration file (often a `settings.json` or similar) and add the following entry to the `mcpServers` object. Make sure to replace `"your-path-here\\server.py"` with the absolute path to the `server.py` file in this project.
 
 ```json
 "mcpServers": {
     "project-context": {
-      "autoApprove": [
-        "clear_project_context_database",
-        "get_project_overview",
-        "search_functions",
-        "get_file_context",
-        "scan_project",
-        "get_context",
-        "get_full_context"
-      ],
       "disabled": false,
       "timeout": 30,
       "type": "stdio",
