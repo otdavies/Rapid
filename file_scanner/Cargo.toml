@@ -1,0 +1,22 @@
+[package]
+name = "file_scanner"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "file_scanner"
+crate-type = ["cdylib"]
+
+[dependencies]
+walkdir = "2"
+rayon = "1"
+ignore = "0.4"
+glob = "0.3"
+libc = "0.2"
+tree-sitter = "0.20"
+tree-sitter-c-sharp = "0.20.0"
+tree-sitter-python = "0.20.0"
+tree-sitter-rust = "0.20.0"
+tree-sitter-typescript = "0.20.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

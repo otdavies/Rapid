@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.log
+.env
+.venv/
+env/
+.pytest_cache/
+
+# Rust
+target/
+
+# IDE and other
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+*.tmp
+*.DS_Store
+Thumbs.db
+
+# MCP specific
+mcp_config.json
