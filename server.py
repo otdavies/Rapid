@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MCP server for maintaining project context.
+RAPID MCP server for maintaining project context.
 This server acts as an orchestration layer, delegating tasks to specialized modules.
 """
 
@@ -17,7 +17,7 @@ import mcp.types as types
 from logic.tool_implementations import get_full_context_impl, project_wide_search_impl, concept_search_impl
 
 
-class ProjectContextServer:
+class RAPIDServer:
     """
     MCP server for maintaining project context.
     This server acts as an orchestration layer, delegating tasks to specialized modules.
@@ -61,7 +61,7 @@ class ProjectContextServer:
                     "extensions": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "File extensions to scan (e.g., .rs, .py, .cs). If not provided, a default set will be used."
+                        "description": "File extensions to scan (Available: .ts .rs, .py, .cs). If not provided, a default set will be used."
                     },
                     "max_depth": {
                         "type": "integer",
@@ -104,7 +104,7 @@ class ProjectContextServer:
                     "extensions": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "File extensions to scan (e.g., .rs, .py, .cs). If not provided, a default set will be used."
+                        "description": "File extensions to scan (Available: .ts .rs, .py, .cs). If not provided, a default set will be used."
                     },
                     "max_depth": {
                         "type": "integer",
@@ -155,7 +155,7 @@ class ProjectContextServer:
                     "extensions": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "File extensions to scan. Defaults to common code extensions."
+                        "description": "File extensions to scan. Defaults to common code extensions. (Available: .ts .rs, .py, .cs)"
                     },
                     "top_n": {
                         "type": "integer",
@@ -164,6 +164,11 @@ class ProjectContextServer:
                     "timeout": {
                         "type": "integer",
                         "description": "Timeout in seconds for the operation. Default is 20."
+                    },
+                    "debug": {
+                        "type": "boolean",
+                        "description": "Whether to include the debug log in the output. Defaults to false.",
+                        "default": False
                     }
                 },
                 "required": ["path", "query"]
@@ -216,9 +221,9 @@ class ProjectContextServer:
 
 
 def main():
-    server = ProjectContextServer()
+    server = RAPIDServer()
     asyncio.run(server.run())
 
 
 if __name__ == "__main__":
-    main()
+    main()  # Entry point

@@ -36,7 +36,7 @@ async def get_full_context_impl(args: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         rust_result = collect_and_parse_files_from_rust(
-            project_path, extensions, compactness_level, timeout_seconds
+            project_path, extensions, compactness_level, timeout_seconds, debug_mode
         )
 
         file_contexts = rust_result.get("file_contexts", [])
@@ -155,13 +155,13 @@ async def project_wide_search_impl(args: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         rust_result = search_in_files_from_rust(
-            project_path, search_string, extensions, context_lines, timeout_seconds
+            project_path, search_string, extensions, context_lines, timeout_seconds, debug_mode
         )
 
         duration = time.time() - start_time
-        
+
         formatted_results = format_search_results(rust_result)
-        
+
         final_stats = rust_result.get("stats", {})
         final_stats["search_duration_seconds"] = round(duration, 2)
 
@@ -198,6 +198,10 @@ async def concept_search_impl(args: Dict[str, Any]) -> Dict[str, Any]:
     extensions = args.get("extensions", [".cs", ".py", ".rs", ".js", ".ts"])
     top_n = args.get("top_n", 10)
     debug_mode = args.get("debug", False)
+    print(
+        f"[tool_implementations.py | concept_search_impl] Received args: {args}", flush=True)
+    print(
+        f"[tool_implementations.py | concept_search_impl] Parsed debug_mode: {debug_mode}", flush=True)
 
     try:
         if not project_path.exists() or not project_path.is_dir():
@@ -209,9 +213,8 @@ async def concept_search_impl(args: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         rust_result = concept_search_from_rust(
-            project_path, query, extensions, top_n, timeout_seconds
+            project_path, query, extensions, top_n, timeout_seconds, debug_mode
         )
-        print(f"RUST_RESULT: {rust_result}")
 
         duration = time.time() - start_time
 
@@ -219,7 +222,7 @@ async def concept_search_impl(args: Dict[str, Any]) -> Dict[str, Any]:
             return {"status": "error_adapter_call", "error": rust_result["error"], "results": [], "stats": {}}
 
         formatted_results = format_concept_search_results(rust_result)
-        
+
         final_stats = rust_result.get("stats", {})
         final_stats["search_duration_seconds"] = round(duration, 2)
 
@@ -229,8 +232,23 @@ async def concept_search_impl(args: Dict[str, Any]) -> Dict[str, Any]:
             "stats": final_stats,
         }
 
+        # Initialize python_debug_logs, potentially extending it with logs from Rust
+        python_debug_logs = rust_result.get(
+            "debug_log", []) if debug_mode else []
+
         if debug_mode:
-            response["debug_log"] = rust_result.get("debug_log", [])
+            # Add Python-level diagnostic info
+            python_debug_logs.insert(
+                0, f"[PY_TOOL_IMPL | concept_search_impl] args.get('debug') type: {type(args.get('debug'))}")
+            python_debug_logs.insert(
+                0, f"[PY_TOOL_IMPL | concept_search_impl] args.get('debug') value: {args.get('debug')}")
+            python_debug_logs.insert(
+                0, f"[PY_TOOL_IMPL | concept_search_impl] Parsed debug_mode: {debug_mode}")
+            response["debug_log"] = python_debug_logs
+        # If not debug_mode, and response happens to have a "debug_log" from rust_result (it shouldn't if rust respects debug_mode),
+        # we might want to clear it or ensure it's not present.
+        # However, current logic in rust_adapter and FFI should mean rust_result["debug_log"] is None or absent if debug_mode was false.
+        # So, if debug_mode is false here, response["debug_log"] will not be set by this block.
 
         return response
 

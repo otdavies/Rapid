@@ -2,7 +2,7 @@ import ctypes
 import json
 import platform
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 # This print statement can be removed if it's no longer needed for startup checks.
 # For now, I'll keep it commented out, assuming it was for the old subprocess model.
@@ -44,7 +44,8 @@ def invoke_rust_scanner(
     project_path_str: str,
     extensions_str: str,
     compactness_level: int,
-    timeout_ms: int
+    timeout_ms: int,
+    debug: bool = False
 ) -> Dict[str, Any]:
     """
     Loads the Rust library, calls the scan_and_parse function, and returns the result.
@@ -65,7 +66,8 @@ def invoke_rust_scanner(
             ctypes.c_char_p,  # root_path_c
             ctypes.c_char_p,  # extensions_c
             ctypes.c_uint8,   # compactness_level_c
-            ctypes.c_uint32   # timeout_ms_c
+            ctypes.c_uint32,  # timeout_ms_c
+            ctypes.c_bool     # debug_c
         ]
         rust_lib.scan_and_parse.restype = ctypes.c_void_p
         rust_lib.free_string.argtypes = [ctypes.c_void_p]
@@ -75,25 +77,37 @@ def invoke_rust_scanner(
         extensions_c = ctypes.c_char_p(extensions_str.encode('utf-8'))
         compactness_level_c = ctypes.c_uint8(compactness_level)
         timeout_ms_c = ctypes.c_uint32(timeout_ms)
+        debug_c = ctypes.c_bool(debug)
 
         result_ptr = rust_lib.scan_and_parse(
-            root_path_c, extensions_c, compactness_level_c, timeout_ms_c)
+            root_path_c, extensions_c, compactness_level_c, timeout_ms_c, debug_c)
 
         if not result_ptr:
             # Ensure free_string is not called with a NULL pointer if scan_and_parse fails early.
             # However, the Rust side should ideally always return a valid pointer (e.g., to an empty error JSON)
             # or the contract for free_string must allow NULL. Assuming free_string handles NULL.
             # Call free_string even if result_ptr is null, if Rust side expects it
-            rust_lib.free_string(result_ptr)
-            return {"file_contexts": [], "debug_log": ["Rust scan_and_parse returned null pointer."]}
+            rust_lib.free_string(result_ptr)  # type: ignore
+            # Return structure should match what Rust returns, potentially including an error field
+            error_payload = {
+                "error": "Rust scan_and_parse returned null pointer.", "file_contexts": []}
+            if debug:
+                error_payload["debug_log"] = [
+                    "Rust scan_and_parse returned null pointer."]
+            return error_payload
 
         value = ctypes.cast(result_ptr, ctypes.c_char_p).value
         json_string = value.decode('utf-8') if value else ""
 
-        rust_lib.free_string(result_ptr)
+        rust_lib.free_string(result_ptr)  # type: ignore
 
         if not json_string:
-            return {"file_contexts": [], "debug_log": ["Rust scan_and_parse returned empty string after decode."]}
+            error_payload = {
+                "error": "Rust scan_and_parse returned empty string after decode.", "file_contexts": []}
+            if debug:
+                error_payload["debug_log"] = [
+                    "Rust scan_and_parse returned empty string after decode."]
+            return error_payload
 
         # Attempt to parse the JSON string
         try:
@@ -128,7 +142,8 @@ def invoke_rust_searcher(
     search_string: str,
     extensions_str: str,
     context_lines: int,
-    timeout_ms: int
+    timeout_ms: int,
+    debug: bool = False
 ) -> Dict[str, Any]:
     """
     Loads the Rust library, calls the project_wide_search function, and returns the result.
@@ -149,7 +164,8 @@ def invoke_rust_searcher(
             ctypes.c_char_p,  # search_string_c
             ctypes.c_char_p,  # extensions_c
             ctypes.c_uint8,   # context_lines_c
-            ctypes.c_uint32   # timeout_ms_c
+            ctypes.c_uint32,  # timeout_ms_c
+            ctypes.c_bool     # debug_c
         ]
         rust_lib.project_wide_search.restype = ctypes.c_void_p
         rust_lib.free_string.argtypes = [ctypes.c_void_p]
@@ -160,21 +176,32 @@ def invoke_rust_searcher(
         extensions_c = ctypes.c_char_p(extensions_str.encode('utf-8'))
         context_lines_c = ctypes.c_uint8(context_lines)
         timeout_ms_c = ctypes.c_uint32(timeout_ms)
+        debug_c = ctypes.c_bool(debug)
 
         result_ptr = rust_lib.project_wide_search(
-            root_path_c, search_string_c, extensions_c, context_lines_c, timeout_ms_c)
+            root_path_c, search_string_c, extensions_c, context_lines_c, timeout_ms_c, debug_c)
 
         if not result_ptr:
-            rust_lib.free_string(result_ptr)
-            return {"results": [], "stats": {}, "debug_log": ["Rust project_wide_search returned null pointer."]}
+            rust_lib.free_string(result_ptr)  # type: ignore
+            error_payload = {
+                "error": "Rust project_wide_search returned null pointer.", "results": [], "stats": {}}
+            if debug:
+                error_payload["debug_log"] = [
+                    "Rust project_wide_search returned null pointer."]
+            return error_payload
 
         value = ctypes.cast(result_ptr, ctypes.c_char_p).value
         json_string = value.decode('utf-8') if value else ""
 
-        rust_lib.free_string(result_ptr)
+        rust_lib.free_string(result_ptr)  # type: ignore
 
         if not json_string:
-            return {"results": [], "stats": {}, "debug_log": ["Rust project_wide_search returned empty string after decode."]}
+            error_payload = {
+                "error": "Rust project_wide_search returned empty string after decode.", "results": [], "stats": {}}
+            if debug:
+                error_payload["debug_log"] = [
+                    "Rust project_wide_search returned empty string after decode."]
+            return error_payload
 
         try:
             result_data = json.loads(json_string)
@@ -193,25 +220,43 @@ def invoke_rust_searcher(
         del rust_lib
         pass
 
+
 def invoke_rust_concept_searcher(
     project_path_str: str,
     query_str: str,
     extensions_str: str,
     top_n: int,
-    timeout_ms: int
+    timeout_ms: int,
+    debug: bool = False
 ) -> Dict[str, Any]:
     """
     Loads the Rust library, calls the concept_search function, and returns the result.
     """
+    adapter_debug_log: List[str] = []
+    if debug:
+        adapter_debug_log.append(
+            f"[RUST_ADAPTER_MARKER_V3] invoke_rust_concept_searcher called with debug={debug}")
+
     lib_path = find_rust_library()
 
     if not lib_path:
-        return {"error": "Rust library not found.", "results": [], "stats": {}}
+        error_payload = {"error": "Rust library not found.",
+                         "results": [], "stats": {}}
+        if debug:
+            error_payload["debug_log"] = adapter_debug_log + \
+                ["Rust library not found in adapter."]
+        return error_payload
 
     try:
         rust_lib = ctypes.CDLL(str(lib_path))
     except OSError as e:
-        return {"error": f"Failed to load Rust library: {e}", "results": [], "stats": {}}
+        error_payload = {
+            "error": f"Failed to load Rust library: {e}", "results": [], "stats": {}}
+        if debug:
+            adapter_debug_log.append(
+                f"Failed to load Rust library in adapter: {e}")
+            error_payload["debug_log"] = adapter_debug_log
+        return error_payload
 
     try:
         rust_lib.concept_search.argtypes = [
@@ -219,7 +264,8 @@ def invoke_rust_concept_searcher(
             ctypes.c_char_p,  # query_c
             ctypes.c_char_p,  # extensions_c
             ctypes.c_size_t,  # top_n_c
-            ctypes.c_uint32   # timeout_ms_c
+            ctypes.c_uint32,  # timeout_ms_c
+            ctypes.c_bool     # debug_c
         ]
         rust_lib.concept_search.restype = ctypes.c_void_p
         rust_lib.free_string.argtypes = [ctypes.c_void_p]
@@ -230,35 +276,65 @@ def invoke_rust_concept_searcher(
         extensions_c = ctypes.c_char_p(extensions_str.encode('utf-8'))
         top_n_c = ctypes.c_size_t(top_n)
         timeout_ms_c = ctypes.c_uint32(timeout_ms)
+        debug_c = ctypes.c_bool(debug)  # Pass as c_bool
 
         result_ptr = rust_lib.concept_search(
-            root_path_c, query_c, extensions_c, top_n_c, timeout_ms_c)
+            root_path_c, query_c, extensions_c, top_n_c, timeout_ms_c, debug_c)
 
         if not result_ptr:
-            rust_lib.free_string(result_ptr)
-            return {"results": [], "stats": {}, "debug_log": ["Rust concept_search returned null pointer."]}
+            rust_lib.free_string(result_ptr)  # type: ignore
+            error_payload = {
+                "error": "Rust concept_search returned null pointer.", "results": [], "stats": {}}
+            if debug:
+                adapter_debug_log.append(
+                    "Rust concept_search returned null pointer in adapter.")
+                error_payload["debug_log"] = adapter_debug_log
+            return error_payload
 
         value = ctypes.cast(result_ptr, ctypes.c_char_p).value
         json_string = value.decode('utf-8') if value else ""
 
-        rust_lib.free_string(result_ptr)
+        rust_lib.free_string(result_ptr)  # type: ignore
 
         if not json_string:
-            return {"results": [], "stats": {}, "debug_log": ["Rust concept_search returned empty string after decode."]}
+            error_payload = {
+                "error": "Rust concept_search returned empty string after decode.", "results": [], "stats": {}}
+            if debug:
+                adapter_debug_log.append(
+                    "Rust concept_search returned empty string after decode in adapter.")
+                error_payload["debug_log"] = adapter_debug_log
+            return error_payload
 
         try:
             result_data = json.loads(json_string)
+            if debug:
+                # Prepend adapter logs to any logs from Rust
+                rust_debug_logs = result_data.get("debug_log", [])
+                if not isinstance(rust_debug_logs, list):  # Ensure it's a list
+                    rust_debug_logs = [
+                        str(rust_debug_logs)] if rust_debug_logs is not None else []
+                result_data["debug_log"] = adapter_debug_log + rust_debug_logs
             return result_data
         except json.JSONDecodeError as e:
-            return {"error": f"Failed to parse JSON response from Rust: {e}",
-                    "raw_response": json_string,
-                    "results": [],
-                    "stats": {}}
+            error_payload = {"error": f"Failed to parse JSON response from Rust: {e}",
+                             "raw_response": json_string,
+                             "results": [],
+                             "stats": {}}
+            if debug:
+                adapter_debug_log.append(
+                    f"JSONDecodeError in adapter: {e}. Raw: {json_string[:100]}...")
+                error_payload["debug_log"] = adapter_debug_log
+            return error_payload
 
     except Exception as e:
-        return {"error": f"An unexpected error occurred while interacting with the Rust library: {e}",
-                "results": [],
-                "stats": {}}
+        error_payload = {"error": f"An unexpected error occurred while interacting with the Rust library: {e}",
+                         "results": [],
+                         "stats": {}}
+        if debug:
+            adapter_debug_log.append(
+                f"Unexpected error in adapter FFI call: {e}")
+            error_payload["debug_log"] = adapter_debug_log
+        return error_payload
     finally:
         del rust_lib
         pass

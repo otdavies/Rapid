@@ -8,7 +8,7 @@ from logic.rust_adapter import invoke_rust_scanner, invoke_rust_searcher, invoke
 
 
 def collect_and_parse_files_from_rust(
-    project_path: Path, extensions: List[str], compactness_level: int, timeout: int
+    project_path: Path, extensions: List[str], compactness_level: int, timeout: int, debug: bool = False
 ) -> Dict[str, Any]:
     """
     Calls the Rust library directly to perform a high-speed scan.
@@ -31,7 +31,8 @@ def collect_and_parse_files_from_rust(
             project_path_str=project_path_str,
             extensions_str=extensions_str,
             compactness_level=compactness_level,
-            timeout_ms=timeout_rust_ms
+            timeout_ms=timeout_rust_ms,
+            debug=debug
         )
 
         # Process the result from invoke_rust_scanner
@@ -105,7 +106,7 @@ def collect_and_parse_files_from_rust(
 
 
 def search_in_files_from_rust(
-    project_path: Path, search_string: str, extensions: List[str], context_lines: int, timeout: int
+    project_path: Path, search_string: str, extensions: List[str], context_lines: int, timeout: int, debug: bool = False
 ) -> Dict[str, Any]:
     """
     Calls the Rust library to perform a project-wide search.
@@ -120,16 +121,21 @@ def search_in_files_from_rust(
             search_string=search_string,
             extensions_str=extensions_str,
             context_lines=context_lines,
-            timeout_ms=timeout_rust_ms
+            timeout_ms=timeout_rust_ms,
+            debug=debug
         )
 
         if "error" in raw_result:
-            return {
+            # Preserve debug_log from adapter if it exists, even on error
+            error_response = {
                 "status": "error_adapter_call",
                 "error": raw_result['error'],
                 "results": [],
                 "stats": {}
             }
+            if "debug_log" in raw_result:
+                error_response["debug_log"] = raw_result["debug_log"]
+            return error_response
 
         return raw_result
 
@@ -138,36 +144,46 @@ def search_in_files_from_rust(
             "status": "error_file_collection_critical",
             "error": str(ex),
             "results": [],
-            "stats": {}
+            "stats": {},
+            # Add a debug log for this critical failure path
+            "debug_log": [f"Critical error in concept_search_from_rust: {ex}"]
         }
 
 
 def concept_search_from_rust(
-    project_path: Path, query: str, extensions: List[str], top_n: int, timeout: int
+    project_path: Path, query: str, extensions: List[str], top_n: int, timeout: int, debug: bool = False
 ) -> Dict[str, Any]:
     """
     Calls the Rust library to perform a concept search.
     """
     timeout_rust_ms = timeout * 1000
     project_path_str = str(project_path)
-    extensions_str = ",".join(extensions)
+    # Extensions for concept search are passed as a JSON string list to the rust_adapter,
+    # which then passes it as a C string to Rust FFI.
+    # The FFI layer in Rust (file_scanner/src/ffi.rs) expects a JSON string for extensions for concept_search.
+    extensions_json_str = json.dumps(extensions)
 
     try:
         raw_result = invoke_rust_concept_searcher(
             project_path_str=project_path_str,
             query_str=query,
-            extensions_str=extensions_str,
+            extensions_str=extensions_json_str,  # Use JSON string here
             top_n=top_n,
-            timeout_ms=timeout_rust_ms
+            timeout_ms=timeout_rust_ms,
+            debug=debug
         )
 
         if "error" in raw_result:
-            return {
+            # Preserve debug_log from adapter if it exists, even on error
+            error_response = {
                 "status": "error_adapter_call",
                 "error": raw_result['error'],
                 "results": [],
                 "stats": {}
             }
+            if "debug_log" in raw_result:
+                error_response["debug_log"] = raw_result["debug_log"]
+            return error_response
 
         return raw_result
 
@@ -176,5 +192,7 @@ def concept_search_from_rust(
             "status": "error_file_collection_critical",
             "error": str(ex),
             "results": [],
-            "stats": {}
+            "stats": {},
+            # Add a debug log for this critical failure path
+            "debug_log": [f"Critical error in concept_search_from_rust: {ex}"]
         }
