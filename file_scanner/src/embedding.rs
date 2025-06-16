@@ -6,7 +6,6 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tracing_subscriber::{fmt, EnvFilter};
 
-// Static OnceCell for the embedding model.
 pub static MODEL: OnceCell<TextEmbedding> = OnceCell::new();
 
 // LogWriter captures tracing logs during model initialization.
@@ -59,7 +58,6 @@ pub fn initialize_model(cache_dir: &Path) -> Result<TextEmbedding, anyhow::Error
     // If `set_default` fails (e.g., a subscriber is already set), logs might be lost or go elsewhere.
     let _guard = tracing::subscriber::set_default(subscriber);
 
-    // Ensure the cache directory exists.
     fs::create_dir_all(cache_dir)
         .with_context(|| format!("Failed to create cache directory at {:?}", cache_dir))?;
 

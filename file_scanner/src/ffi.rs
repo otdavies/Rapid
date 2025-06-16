@@ -1,18 +1,23 @@
 use crate::embedding;
 use crate::scanner;
 use crate::structs::{
-    ConceptSearchResultItem, ConceptSearchServiceResult, ConceptSearchStats, FileSearchResult,
-    ScanResult, SearchMatch, SearchServiceResult, SearchStats,
+    CachedFileEmbeddings, ConceptSearchResultItem, ConceptSearchServiceResult,
+    ConceptSearchStats, FileSearchResult, ScanResult, SearchMatch,
+    SearchServiceResult, SearchStats,
 };
 use crate::utils;
 
+use anyhow::Context as AnyhowContext;
 use ignore::WalkBuilder;
 use rayon::prelude::*;
+use sha2::{Digest, Sha256};
+use sled;
+use std::collections::HashMap;
 use std::ffi::{CStr, CString};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::os::raw::c_char;
-use std::path::Path;
+use std::path::{Path};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -27,108 +32,270 @@ fn concept_search_inner(
     debug: bool,
 ) -> Result<ConceptSearchServiceResult, anyhow::Error> {
     let start_time = Instant::now();
-    let cache_dir = Path::new(root_path_str).join("file_scanner").join(".cache");
-    let mut debug_log_accumulator: Option<Vec<String>> =
-        if debug { Some(Vec::new()) } else { None };
+    let root_path_obj = Path::new(root_path_str);
+
+    // Configure paths for model cache and embedding database
+    let model_init_cache_dir = root_path_obj.join(".cache").join("file_scanner_model_cache");
+    fs::create_dir_all(&model_init_cache_dir)
+        .with_context(|| format!("Failed to create model cache directory at {:?}", model_init_cache_dir))?;
+
+    let embedding_db_dir = root_path_obj.join(".cache").join("file_scanner_embedding_cache");
+    fs::create_dir_all(&embedding_db_dir)
+        .with_context(|| format!("Failed to create embedding DB directory at {:?}", embedding_db_dir))?;
+    
+    let db_path = embedding_db_dir.join("embeddings.sled");
+    let db = sled::open(&db_path)
+        .with_context(|| format!("Failed to open embedding cache DB at {:?}", db_path))?;
+
+    let mut debug_log_accumulator: Option<Vec<String>> = if debug { Some(Vec::new()) } else { None };
 
     if let Some(log_acc) = &mut debug_log_accumulator {
         log_acc.push(format!(
-            "[ConceptSearchInner] START. Debug: {}, Extensions: {:?}, Query: '{}', Path: '{}'",
-            debug, extensions, query_str, root_path_str
+            "[ConceptSearchInner] START. Debug: {}, Extensions: {:?}, Query: '{}', Path: '{}', DB: '{}'",
+            debug, extensions, query_str, root_path_str, db_path.display()
         ));
     }
 
-    // 1. Get all functions using the scanner module
-    let scan_result = scanner::perform_scan(root_path_str, extensions, 3, timeout_ms, debug);
+    // 1. Scan files to get function contexts
+    let scan_result = scanner::perform_scan(root_path_str, extensions.clone(), 3, timeout_ms, debug);
     if debug {
-        if let Some(scan_log) = scan_result.debug_log {
-            debug_log_accumulator
-                .get_or_insert_with(Vec::new)
-                .extend(scan_log);
+        if let Some(scan_log) = scan_result.debug_log { // scan_result is moved if not careful
+            debug_log_accumulator.get_or_insert_with(Vec::new).extend(scan_log);
         }
     }
-
-    let documents: Vec<String> = scan_result
-        .file_contexts
-        .par_iter()
-        .flat_map_iter(|fc| {
-            fc.functions.iter().map(|f| {
-                format!(
-                    "Function: {}\nFile: {}\nBody:\n{}",
-                    f.name,
-                    fc.path,
-                    f.body.as_deref().unwrap_or("")
-                )
-            })
-        })
-        .collect();
-
-    let doc_identifiers: Vec<_> = scan_result
-        .file_contexts
-        .par_iter()
-        .flat_map_iter(|fc| {
-            fc.functions.iter().map(move |f| {
-                (
-                    fc.path.clone(),
-                    f.name.clone(),
-                    f.body.clone(),
-                )
-            })
-        })
-        .collect();
-
-    if documents.is_empty() {
-        if let Some(log_ref) = &mut debug_log_accumulator {
-            log_ref.push("[ConceptSearch] No documents found to embed.".to_string());
+    
+    if scan_result.file_contexts.is_empty() {
+         if let Some(log_ref) = &mut debug_log_accumulator {
+            log_ref.push("[ConceptSearchInner] No file contexts found from scan.".to_string());
         }
         return Ok(ConceptSearchServiceResult {
             results: vec![],
-            stats: ConceptSearchStats {
-                functions_analyzed: 0,
-                search_duration_seconds: start_time.elapsed().as_secs_f32(),
-            },
-            error: Some(
-                "No documents were found to embed. The initial scan may have found no functions."
-                    .to_string(),
-            ),
+            stats: ConceptSearchStats { functions_analyzed: 0, search_duration_seconds: start_time.elapsed().as_secs_f32() },
+            error: Some("Initial file scan found no processable files or functions.".to_string()),
             debug_log: debug_log_accumulator,
         });
     }
-    if let Some(log_ref) = &mut debug_log_accumulator {
-        log_ref.push(format!(
-            "[ConceptSearch] Found {} documents to embed.",
-            documents.len()
-        ));
-    }
 
-    // 2. Embed query and documents
-    let model = embedding::MODEL.get_or_try_init(|| embedding::initialize_model(&cache_dir))?;
-    if let Some(log_ref) = &mut debug_log_accumulator {
-        log_ref.push("[ConceptSearch] Embedding model initialized/retrieved.".to_string());
-    }
+    // 2. Process file contexts: check cache, collect texts for embedding
+    //    (file_path_abs, func_name, func_body_for_result_struct), embedding_vector
+    let mut all_function_embeddings: Vec<((String, String, Option<String>), Vec<f32>)> = Vec::new();
+    //    (file_path_abs, func_name, func_body_for_result_struct), text_to_embed
+    let mut texts_to_embed_collector: Vec<((String, String, Option<String>), String)> = Vec::new();
 
-    let mut query_embeddings = model.embed(vec![query_str.to_string()], None)?;
-    if query_embeddings.is_empty() {
-        if let Some(log_ref) = &mut debug_log_accumulator {
-            log_ref.push("[ConceptSearch] Error: Failed to embed query string.".to_string());
+    let processing_results: Vec<(
+        Vec<((String, String, Option<String>), Vec<f32>)>, // cached_embeddings for this file
+        Vec<((String, String, Option<String>), String)>,   // texts_to_embed for this file
+        Option<(String, String, HashMap<String, Vec<f32>>)> // Option<(rel_path, hash, func_embeddings_map)> for cache update
+    )> = scan_result
+        .file_contexts
+        .par_iter()
+        .map(|file_context| {
+            let mut file_cached_embeddings = Vec::new();
+            let mut file_texts_to_embed = Vec::new();
+            let mut functions_for_this_file_cache_update: HashMap<String, Vec<f32>> = HashMap::new();
+
+            let file_path_abs = Path::new(&file_context.path);
+            let relative_file_path = file_path_abs.strip_prefix(root_path_obj).unwrap_or(file_path_abs);
+            let cache_key = relative_file_path.to_string_lossy().into_owned();
+
+            let file_content = match fs::read_to_string(file_path_abs) {
+                Ok(content) => content,
+                Err(_) => return (file_cached_embeddings, file_texts_to_embed, None), // Skip if file unreadable
+            };
+
+            let mut hasher = Sha256::new();
+            hasher.update(file_content.as_bytes());
+            let current_file_hash = format!("{:x}", hasher.finalize());
+            
+            let mut needs_re_embedding_for_cache_update = false;
+
+            match db.get(&cache_key) {
+                Ok(Some(ivec)) => {
+                    match bincode::deserialize::<CachedFileEmbeddings>(&ivec) {
+                        Ok(cached_data) if cached_data.file_content_hash == current_file_hash => {
+                            for func_info in &file_context.functions {
+                                let identifier = (file_context.path.clone(), func_info.name.clone(), func_info.body.clone());
+                                if let Some(embedding) = cached_data.function_embeddings.get(&func_info.name) {
+                                    file_cached_embeddings.push((identifier, embedding.clone()));
+                                    functions_for_this_file_cache_update.insert(func_info.name.clone(), embedding.clone());
+                                } else { // New function in an otherwise unchanged file
+                                    let text_to_embed = format!("Function: {}\nFile: {}\nBody:\n{}", func_info.name, file_context.path, func_info.body.as_deref().unwrap_or(""));
+                                    file_texts_to_embed.push((identifier, text_to_embed));
+                                    needs_re_embedding_for_cache_update = true;
+                                }
+                            }
+                        }
+                        _ => { // Hash mismatch or deserialization error
+                            needs_re_embedding_for_cache_update = true;
+                            for func_info in &file_context.functions {
+                                let identifier = (file_context.path.clone(), func_info.name.clone(), func_info.body.clone());
+                                let text_to_embed = format!("Function: {}\nFile: {}\nBody:\n{}", func_info.name, file_context.path, func_info.body.as_deref().unwrap_or(""));
+                                file_texts_to_embed.push((identifier, text_to_embed));
+                            }
+                        }
+                    }
+                }
+                _ => { // Not in cache or DB error
+                    needs_re_embedding_for_cache_update = true;
+                    for func_info in &file_context.functions {
+                        let identifier = (file_context.path.clone(), func_info.name.clone(), func_info.body.clone());
+                        let text_to_embed = format!("Function: {}\nFile: {}\nBody:\n{}", func_info.name, file_context.path, func_info.body.as_deref().unwrap_or(""));
+                        file_texts_to_embed.push((identifier, text_to_embed));
+                    }
+                }
+            }
+            
+            let cache_update_info = if needs_re_embedding_for_cache_update {
+                // Placeholder, actual embeddings will be filled after batch embedding
+                Some((cache_key.clone(), current_file_hash.clone(), HashMap::new()))
+            } else if !functions_for_this_file_cache_update.is_empty() {
+                 // File was fully cached and valid, ensure its data is available for potential re-write if other parts of cache are sparse
+                Some((cache_key.clone(), current_file_hash.clone(), functions_for_this_file_cache_update))
+            } else {
+                None
+            };
+
+            (file_cached_embeddings, file_texts_to_embed, cache_update_info)
+        })
+        .collect();
+
+    let mut files_requiring_cache_update: HashMap<String, (String, HashMap<String, Vec<f32>>)> = HashMap::new();
+    for (cached_for_file, to_embed_for_file, cache_update_opt) in processing_results {
+        all_function_embeddings.extend(cached_for_file);
+        texts_to_embed_collector.extend(to_embed_for_file);
+        if let Some((rel_path, hash, func_map)) = cache_update_opt {
+            files_requiring_cache_update.entry(rel_path).or_insert_with(|| (hash, func_map));
         }
-        return Err(anyhow::anyhow!("Failed to embed query string."));
+    }
+    
+    if let Some(log_ref) = &mut debug_log_accumulator {
+        log_ref.push(format!("[ConceptSearchInner] {} functions loaded from cache, {} functions to embed.", all_function_embeddings.len(), texts_to_embed_collector.len()));
+    }
+
+    // 3. Embed texts for functions not found in cache (if any)
+    let model = embedding::MODEL.get_or_try_init(|| embedding::initialize_model(&model_init_cache_dir))?;
+    if let Some(log_ref) = &mut debug_log_accumulator {
+        log_ref.push("[ConceptSearchInner] Embedding model initialized/retrieved.".to_string());
+    }
+
+    if !texts_to_embed_collector.is_empty() {
+        let actual_texts_to_embed: Vec<String> = texts_to_embed_collector.iter().map(|(_, text)| text.clone()).collect();
+        let new_embeddings_vec = model.embed(actual_texts_to_embed, None)
+            .with_context(|| "Failed to embed documents")?;
+
+        if let Some(log_ref) = &mut debug_log_accumulator {
+            log_ref.push(format!("[ConceptSearchInner] {} new embeddings generated.", new_embeddings_vec.len()));
+        }
+
+        for (i, ((file_path_abs, func_name, func_body_for_result), _)) in texts_to_embed_collector.into_iter().enumerate() {
+            if let Some(embedding_vec) = new_embeddings_vec.get(i) {
+                all_function_embeddings.push(((file_path_abs.clone(), func_name.clone(), func_body_for_result), embedding_vec.clone()));
+                
+                // Update data for cache
+                let relative_file_path_for_cache = Path::new(&file_path_abs).strip_prefix(root_path_obj).unwrap_or(Path::new(&file_path_abs));
+                let cache_key_for_update = relative_file_path_for_cache.to_string_lossy().into_owned();
+
+                if let Some((_hash, func_map)) = files_requiring_cache_update.get_mut(&cache_key_for_update) {
+                    func_map.insert(func_name.clone(), embedding_vec.clone());
+                }
+            }
+        }
+    }
+
+    // 4. Update sled cache with new/changed embeddings
+    for (rel_path, (hash, func_embeddings_map)) in files_requiring_cache_update {
+        if func_embeddings_map.is_empty() && all_function_embeddings.iter().any(|((fp,_,_),_)| Path::new(fp).strip_prefix(root_path_obj).map_or(false, |p| p.to_string_lossy() == rel_path)) {
+            // This means a file marked for cache update had no functions successfully embedded or retrieved.
+            // We should ensure its functions are populated in func_embeddings_map from all_function_embeddings.
+            let mut temp_map = func_embeddings_map.clone(); // Avoid mutable borrow issue
+            for ((fp, fn_name, _), emb_vec) in &all_function_embeddings {
+                if Path::new(fp).strip_prefix(root_path_obj).map_or(false, |p| p.to_string_lossy() == rel_path) {
+                    temp_map.insert(fn_name.clone(), emb_vec.clone());
+                }
+            }
+             if !temp_map.is_empty() { // Only update if we actually have embeddings for this file
+                let cache_entry = CachedFileEmbeddings {
+                    file_content_hash: hash,
+                    function_embeddings: temp_map,
+                };
+                match bincode::serialize(&cache_entry) {
+                    Ok(serialized_data) => {
+                        if let Err(e) = db.insert(rel_path.as_bytes(), serialized_data) {
+                            if let Some(log_ref) = &mut debug_log_accumulator {
+                                log_ref.push(format!("[ConceptSearchInner] Error inserting into cache for {}: {}", rel_path, e));
+                            }
+                        }
+                    }
+                    Err(e) => {
+                         if let Some(log_ref) = &mut debug_log_accumulator {
+                            log_ref.push(format!("[ConceptSearchInner] Error serializing cache entry for {}: {}", rel_path, e));
+                        }
+                    }
+                }
+            }
+        } else if !func_embeddings_map.is_empty() { // Original logic if map was populated during new embedding phase
+             let cache_entry = CachedFileEmbeddings {
+                file_content_hash: hash,
+                function_embeddings: func_embeddings_map,
+            };
+            match bincode::serialize(&cache_entry) {
+                Ok(serialized_data) => {
+                    if let Err(e) = db.insert(rel_path.as_bytes(), serialized_data) {
+                        if let Some(log_ref) = &mut debug_log_accumulator {
+                            log_ref.push(format!("[ConceptSearchInner] Error inserting into cache for {}: {}", rel_path, e));
+                        }
+                    }
+                }
+                Err(e) => {
+                     if let Some(log_ref) = &mut debug_log_accumulator {
+                        log_ref.push(format!("[ConceptSearchInner] Error serializing cache entry for {}: {}", rel_path, e));
+                    }
+                }
+            }
+        }
+    }
+    if let Err(e) = db.flush() {
+        if let Some(log_ref) = &mut debug_log_accumulator {
+            log_ref.push(format!("[ConceptSearchInner] Error flushing cache DB: {}", e));
+        }
+    }
+
+
+    if all_function_embeddings.is_empty() {
+        if let Some(log_ref) = &mut debug_log_accumulator {
+            log_ref.push("[ConceptSearchInner] No documents available after cache processing and embedding.".to_string());
+        }
+        return Ok(ConceptSearchServiceResult {
+            results: vec![],
+            stats: ConceptSearchStats { functions_analyzed: 0, search_duration_seconds: start_time.elapsed().as_secs_f32() },
+            error: Some("No functions available for similarity search after caching and embedding steps.".to_string()),
+            debug_log: debug_log_accumulator,
+        });
+    }
+    
+    // 5. Embed query
+    let mut query_embeddings = model.embed(vec![query_str.to_string()], None)
+        .with_context(|| "Failed to embed query string")?;
+    if query_embeddings.is_empty() {
+        return Err(anyhow::anyhow!("Failed to embed query string, got empty result."));
     }
     let query_embedding = query_embeddings.remove(0);
     if let Some(log_ref) = &mut debug_log_accumulator {
-        log_ref.push("[ConceptSearch] Query embedded successfully.".to_string());
+        log_ref.push(format!("[ConceptSearchInner] Query embedded. Dim: {}. First 5: {:?}", query_embedding.len(), query_embedding.iter().take(5).collect::<Vec<_>>()));
     }
 
-    let doc_embeddings = model.embed(documents, None)?;
+    // 6. Prepare final doc_identifiers and doc_embeddings for similarity search
+    let final_doc_identifiers: Vec<(String, String, Option<String>)> = all_function_embeddings.iter().map(|(ident, _)| ident.clone()).collect();
+    let final_doc_embeddings: Vec<Vec<f32>> = all_function_embeddings.iter().map(|(_, emb)| emb.clone()).collect();
+
     if let Some(log_ref) = &mut debug_log_accumulator {
-        log_ref.push(format!(
-            "[ConceptSearch] {} documents embedded successfully.",
-            doc_embeddings.len()
-        ));
+         log_ref.push(format!("[ConceptSearchInner] Total functions for similarity search: {}. First identifier: {:?}", 
+            final_doc_identifiers.len(), 
+            final_doc_identifiers.first()));
     }
 
-    // 3. Cosine similarity
-    let mut similarities: Vec<(usize, f32)> = doc_embeddings
+    // 7. Cosine similarity
+    let mut similarities: Vec<(usize, f32)> = final_doc_embeddings
         .par_iter()
         .enumerate()
         .map(|(i, doc_emb)| {
@@ -138,32 +305,29 @@ fn concept_search_inner(
         .collect();
 
     similarities.par_sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    if let Some(log_ref) = &mut debug_log_accumulator {
-        log_ref.push("[ConceptSearch] Similarities calculated and sorted.".to_string());
-    }
 
-    // 4. Get top N results
+    // 8. Get top N results
     let results: Vec<ConceptSearchResultItem> = similarities
         .iter()
         .take(top_n)
-        .map(|(idx, sim)| ConceptSearchResultItem {
-            file: doc_identifiers[*idx].0.clone(),
-            function: doc_identifiers[*idx].1.clone(),
-            similarity: *sim,
-            body: doc_identifiers[*idx].2.clone(),
+        .filter_map(|(idx, sim)| {
+            final_doc_identifiers.get(*idx).map(|ident| ConceptSearchResultItem {
+                file: ident.0.clone(),
+                function: ident.1.clone(),
+                similarity: *sim,
+                body: ident.2.clone(),
+            })
         })
         .collect();
-    if let Some(log_ref) = &mut debug_log_accumulator {
-        log_ref.push(format!(
-            "[ConceptSearch] Top {} results collected.",
-            results.len()
-        ));
-    }
 
+    if let Some(log_ref) = &mut debug_log_accumulator {
+        log_ref.push(format!("[ConceptSearchInner] Top {} results collected. Similarity calculation done.", results.len()));
+    }
+    
     Ok(ConceptSearchServiceResult {
         results,
         stats: ConceptSearchStats {
-            functions_analyzed: doc_identifiers.len(),
+            functions_analyzed: final_doc_identifiers.len(),
             search_duration_seconds: start_time.elapsed().as_secs_f32(),
         },
         error: None,
@@ -251,7 +415,7 @@ pub unsafe extern "C" fn scan_and_parse(
         extensions,
         compactness_level,
         timeout_milliseconds,
-        debug_c, // Pass debug flag
+        debug_c,
     );
 
     let json_output = serde_json::to_string(&scan_result).unwrap_or_else(|e| {
@@ -297,12 +461,21 @@ pub unsafe extern "C" fn concept_search(
     // Create a temporary debug log for FFI entry diagnostics
     let mut ffi_entry_debug_log: Option<Vec<String>> = if debug_c { Some(Vec::new()) } else { None };
     if let Some(log) = &mut ffi_entry_debug_log {
-        log.push(format!("[FFI concept_search] Received debug_c: {}", debug_c));
+        log.push(format!("[FFI concept_search] Entry. Received debug_c: {}, root_path_c: {:?}, query_c: {:?}, extensions_c: {:?}, top_n_c: {}, timeout_ms_c: {}", 
+            debug_c, root_path_c, query_c, extensions_c, top_n_c, timeout_ms_c));
     }
 
     let root_path_str = CStr::from_ptr(root_path_c).to_str().unwrap_or_default();
     let query_str = CStr::from_ptr(query_c).to_str().unwrap_or_default();
     let extensions_json_str = CStr::from_ptr(extensions_c).to_str().unwrap_or_default();
+
+    if debug_c {
+        if let Some(log) = &mut ffi_entry_debug_log {
+            log.push(format!("[FFI concept_search] Parsed root_path_str (first 100): '{}'", &root_path_str.chars().take(100).collect::<String>()));
+            log.push(format!("[FFI concept_search] Parsed query_str (first 100): '{}'", &query_str.chars().take(100).collect::<String>()));
+            log.push(format!("[FFI concept_search] Parsed extensions_json_str (first 100): '{}'", &extensions_json_str.chars().take(100).collect::<String>()));
+        }
+    }
 
     if root_path_str.is_empty() || query_str.is_empty() || extensions_json_str.is_empty() {
         let mut error_msg = "Error: One or more C string arguments (root_path, query, extensions) are null, empty or invalid UTF-8.".to_string();
@@ -352,7 +525,7 @@ pub unsafe extern "C" fn concept_search(
     // If we pass the initial checks, call concept_search_inner
     // concept_search_inner will create its own debug_log_accumulator based on debug_c
     // We need to merge ffi_entry_debug_log with the one from concept_search_inner
-    let mut inner_result = match concept_search_inner(
+    let inner_result = match concept_search_inner(
         root_path_str,
         query_str,
         extensions,
@@ -587,7 +760,7 @@ pub unsafe extern "C" fn project_wide_search(
                         let mut file_matches = Vec::new();
 
                         for (i, line) in lines.iter().enumerate() {
-                            if line.contains(&search_string_clone_box) { // Corrected variable
+                            if line.contains(&search_string_clone_box) {
                                 let start_context = i.saturating_sub(context_lines_c as usize);
                                 let end_context =
                                     (i + context_lines_c as usize + 1).min(lines.len());

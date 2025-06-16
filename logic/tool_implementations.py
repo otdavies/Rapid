@@ -50,16 +50,17 @@ async def get_full_context_impl(args: Dict[str, Any]) -> Dict[str, Any]:
         # For more detailed stats
         stats['timed_out_internally'] = is_timed_out_internally
 
-        # Determine status based on rust_result and timeouts
-        # rust_result["status"] can be "error_external_timeout", "success_partial_internal_timeout", etc.
+        # Determine status based on rust_result
+        # rust_result["status"] can be "error_ffi_call", "success_partial_internal_timeout", etc.
         # or a simple "error" if something else went wrong in file_collection.
-        # Default to success if no status from below
+        # Default to success if no status
         final_status = rust_result.get("status", "success")
 
-        if "error" in final_status:  # Covers "error", "error_external_timeout"
-            # Unreliable if external timeout or other error
-            stats['scanned_files'] = 0
-            if is_timed_out_internally:  # If Rust also timed out, get its count
+        # Covers "error", "error_ffi_call", "error_file_collection_critical"
+        if "error" in final_status or final_status.startswith("error_"):
+            # Unreliable if FFI error or other error in collection layer
+            stats['scanned_files'] = 0  # Default if error
+            if is_timed_out_internally:  # If Rust also timed out, its count is more relevant
                 stats['scanned_files'] = rust_result.get(
                     "files_processed_before_timeout", 0)
 
@@ -67,8 +68,8 @@ async def get_full_context_impl(args: Dict[str, Any]) -> Dict[str, Any]:
             duration = time.time() - overall_start_time
             stats["scan_duration_seconds"] = round(duration, 2)
             return {
-                "status": final_status,
-                "error": rust_result.get("error", "Processing error or timeout in collection layer."),
+                "status": final_status,  # Propagate status from file_collection
+                "error": rust_result.get("error", "Processing error or timeout in FFI/collection layer."),
                 "context": "",
                 "stats": stats,
                 "debug_log": debug_log
@@ -190,72 +191,138 @@ async def concept_search_impl(args: Dict[str, Any]) -> Dict[str, Any]:
     input_path_str = args["path"]
     query = args["query"]
     project_path = Path(input_path_str)
+    all_debug_logs: List[str] = []
+
+    # Get debug_mode early to use for all logging and decisions
+    debug_mode = args.get("debug", False)
+
+    if debug_mode:
+        all_debug_logs.append(
+            f"[PY_TOOL_IMPL | concept_search_impl] Received args: {args}")
+        all_debug_logs.append(
+            f"[PY_TOOL_IMPL | concept_search_impl] Parsed debug_mode: {debug_mode}")
+        all_debug_logs.append(
+            f"[PY_TOOL_IMPL | concept_search_impl] Type of 'debug' in args: {type(args.get('debug'))}, Value: {args.get('debug')}")
 
     if not project_path.is_absolute():
-        return {"status": "error", "error": f"Path '{input_path_str}' must be an absolute path."}
+        error_msg = f"Path '{input_path_str}' must be an absolute path."
+        if debug_mode:
+            all_debug_logs.append(
+                f"[PY_TOOL_IMPL | concept_search_impl] Error: {error_msg}")
+            return {"status": "error", "error": error_msg, "debug_log": all_debug_logs}
+        return {"status": "error", "error": error_msg}
 
     timeout_seconds = args.get("timeout", 20)
     extensions = args.get("extensions", [".cs", ".py", ".rs", ".js", ".ts"])
     top_n = args.get("top_n", 10)
-    debug_mode = args.get("debug", False)
-    print(
-        f"[tool_implementations.py | concept_search_impl] Received args: {args}", flush=True)
-    print(
-        f"[tool_implementations.py | concept_search_impl] Parsed debug_mode: {debug_mode}", flush=True)
 
     try:
         if not project_path.exists() or not project_path.is_dir():
-            return {"status": "error", "error": f"Project path '{input_path_str}' not found or not a directory"}
+            error_msg = f"Project path '{input_path_str}' not found or not a directory"
+            if debug_mode:
+                all_debug_logs.append(
+                    f"[PY_TOOL_IMPL | concept_search_impl] Error: {error_msg}")
+                return {"status": "error", "error": error_msg, "debug_log": all_debug_logs}
+            return {"status": "error", "error": error_msg}
     except Exception as e:
-        return {"status": "error", "error": f"Invalid project path: {e}"}
+        error_msg = f"Invalid project path: {e}"
+        if debug_mode:
+            all_debug_logs.append(
+                f"[PY_TOOL_IMPL | concept_search_impl] Error: {error_msg}")
+            return {"status": "error", "error": error_msg, "debug_log": all_debug_logs}
+        return {"status": "error", "error": error_msg}
 
     start_time = time.time()
 
     try:
+        if debug_mode:
+            all_debug_logs.append(
+                f"[PY_TOOL_IMPL | concept_search_impl] Calling concept_search_from_rust with: "
+                f"project_path='{project_path}', query='{query[:50]}...', extensions={extensions}, "
+                f"top_n={top_n}, timeout_seconds={timeout_seconds}, debug_mode={debug_mode}"
+            )
+
         rust_result = concept_search_from_rust(
             project_path, query, extensions, top_n, timeout_seconds, debug_mode
         )
 
+        if debug_mode:
+            # Log a summary of what was received from the lower layer
+            rust_debug_log_summary = rust_result.get("debug_log", [])
+            all_debug_logs.append(
+                f"[PY_TOOL_IMPL | concept_search_impl] Received from concept_search_from_rust: "
+                f"status='{rust_result.get('status', 'N/A')}', "
+                f"error='{rust_result.get('error', 'N/A')}', "
+                f"results_type='{type(rust_result.get('results')).__name__}', "
+                f"num_results={len(rust_result.get('results', [])) if isinstance(rust_result.get('results'), list) else 'N/A'}, "
+                f"num_debug_logs_from_rust={len(rust_debug_log_summary)}"
+            )
+
+        # Aggregate logs from lower layer
+        all_debug_logs.extend(rust_result.get("debug_log", []))
+
         duration = time.time() - start_time
 
-        if rust_result.get("error") is not None:
-            return {"status": "error_adapter_call", "error": rust_result["error"], "results": [], "stats": {}}
+        # Check for errors reported by file_collection.py (which includes errors from ffi.py and Rust)
+        # The ffi.py layer and file_collection.py already try to set a meaningful status.
+        status_from_collection = rust_result.get("status", "success")
+        if "error" in status_from_collection or status_from_collection.startswith("error_"):
+            error_msg = rust_result.get(
+                "error", "Unknown error from concept search process.")
+            error_response = {"status": status_from_collection,  # Use the status from file_collection
+                              "error": error_msg,
+                              # Preserve partial results if any
+                              "results": rust_result.get("results", ""),
+                              "stats": rust_result.get("stats", {})}
+            if debug_mode:
+                all_debug_logs.append(
+                    f"[PY_TOOL_IMPL | concept_search_impl] Error from file_collection: {error_msg} (status: {status_from_collection})")
+                error_response["debug_log"] = all_debug_logs
+            return error_response
 
         formatted_results = format_concept_search_results(rust_result)
+        if debug_mode:
+            # Log a snippet of formatted results to check for emptiness
+            formatted_results_str = str(formatted_results)
+            all_debug_logs.append(
+                f"[PY_TOOL_IMPL | concept_search_impl] Formatted results (first 200 chars): {formatted_results_str[:200]}"
+            )
+            # If formatted is empty but original had results
+            if not formatted_results_str and rust_result.get('results'):
+                all_debug_logs.append(
+                    f"[PY_TOOL_IMPL | concept_search_impl] WARNING: Formatted results are empty, but rust_result had results. Rust result keys: {list(rust_result.keys())}"
+                )
 
         final_stats = rust_result.get("stats", {})
         final_stats["search_duration_seconds"] = round(duration, 2)
 
         response = {
-            "status": "success",
+            # Propagate status from rust_result
+            "status": rust_result.get("status", "success"),
             "results": formatted_results,
             "stats": final_stats,
         }
 
-        # Initialize python_debug_logs, potentially extending it with logs from Rust
-        python_debug_logs = rust_result.get(
-            "debug_log", []) if debug_mode else []
-
         if debug_mode:
-            # Add Python-level diagnostic info
-            python_debug_logs.insert(
-                0, f"[PY_TOOL_IMPL | concept_search_impl] args.get('debug') type: {type(args.get('debug'))}")
-            python_debug_logs.insert(
-                0, f"[PY_TOOL_IMPL | concept_search_impl] args.get('debug') value: {args.get('debug')}")
-            python_debug_logs.insert(
-                0, f"[PY_TOOL_IMPL | concept_search_impl] Parsed debug_mode: {debug_mode}")
-            response["debug_log"] = python_debug_logs
-        # If not debug_mode, and response happens to have a "debug_log" from rust_result (it shouldn't if rust respects debug_mode),
-        # we might want to clear it or ensure it's not present.
-        # However, current logic in rust_adapter and FFI should mean rust_result["debug_log"] is None or absent if debug_mode was false.
-        # So, if debug_mode is false here, response["debug_log"] will not be set by this block.
+            response["debug_log"] = all_debug_logs
 
         return response
 
     except Exception as e:
         duration = time.time() - start_time
-        return {
+        critical_error_msg = f"Critical concept search failed in tool_implementations: {e}"
+
+        if debug_mode:
+            all_debug_logs.append(
+                f"[PY_TOOL_IMPL | concept_search_impl] Critical error: {critical_error_msg}"
+            )
+
+        error_response = {
             "status": "error",
-            "error": f"Critical concept search failed in tool_implementations: {e}",
-            "stats": {"search_duration_seconds": round(duration, 2)}
+            "error": critical_error_msg,
+            "stats": {"search_duration_seconds": round(duration, 2)},
         }
+        if debug_mode:
+            error_response["debug_log"] = all_debug_logs
+
+        return error_response

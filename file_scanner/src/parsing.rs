@@ -16,7 +16,6 @@ use tree_sitter::{Query, QueryCursor};
 /// Returns `None` for binary files, unreadable files, or if no functions are extracted.
 pub fn parse_file(path: &Path, compactness: u8) -> Option<FileContext> {
     if utils::is_binary(path) {
-        // Binary files are skipped.
         return None;
     }
 
@@ -65,7 +64,6 @@ pub fn parse_file(path: &Path, compactness: u8) -> Option<FileContext> {
             let node_text = node.utf8_text(code.as_bytes()).unwrap_or("").to_string();
 
             match capture_name {
-                // Convert &String to &str for matching
                 "method_name" | "name" => name = node_text, // "name" is used in Python queries.
                 "comment" => comment = Some(node_text),
                 "function_definition" => function_definition_node = Some(node),
@@ -125,7 +123,6 @@ pub fn parse_file(path: &Path, compactness: u8) -> Option<FileContext> {
     }
 
     if functions.is_empty() {
-        // No functions extracted from the file.
         return None;
     }
 

@@ -19,8 +19,10 @@ from logic.tool_implementations import get_full_context_impl, project_wide_searc
 
 class RAPIDServer:
     """
-    MCP server for maintaining project context.
-    This server acts as an orchestration layer, delegating tasks to specialized modules.
+    Project Intelligence MCP Server: Provides advanced tools for deep codebase analysis,
+    understanding, and navigation. Enables an AI assistant to effectively explore, search,
+    and comprehend complex software projects by offering structured context retrieval,
+    precise string searching, and powerful semantic concept location.
     """
     SERVER_NAME = "project-context"
     SERVER_VERSION = "0.4.0"
@@ -37,16 +39,16 @@ class RAPIDServer:
     async def list_tools(self) -> List[types.Tool]:
         """Lists the available tools."""
         return [
-            self._get_full_context_tool_definition(),
-            self._get_project_wide_search_tool_definition(),
-            self._get_concept_search_tool_definition(),
+            self._get_project_full_code_context_tool_definition(),
+            self._get_project_find_string_tool_definition(),
+            self._get_project_find_code_by_concept_tool_definition(),
         ]
 
-    def _get_project_wide_search_tool_definition(self) -> types.Tool:
-        """Returns the definition for the 'project_wide_search' tool."""
+    def _get_project_find_string_tool_definition(self) -> types.Tool:
+        """Returns the definition for the 'project_find_string' tool."""
         return types.Tool(
-            name="project_wide_search",
-            description="Perform a project-wide search for a string.",
+            name="find_string",
+            description="Efficiently searches all files within a specified project directory for an exact string or pattern. Ideal for locating specific code snippets, configurations, or mentions across the entire codebase. Returns matches with surrounding context lines.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -89,11 +91,11 @@ class RAPIDServer:
             }
         )
 
-    def _get_full_context_tool_definition(self) -> types.Tool:
-        """Returns the definition for the 'get_full_context' tool."""
+    def _get_project_full_code_context_tool_definition(self) -> types.Tool:
+        """Returns the definition for the 'project_get_full_code_context' tool."""
         return types.Tool(
-            name="get_full_context",
-            description="Scrape the project directory for code files and return the full context.",
+            name="get_full_code_context",
+            description="Comprehensively scans a project directory to extract and structure code from specified file types. Generates a detailed overview of the project's content, including file structures and optionally, function/class descriptions. Essential for gaining a holistic understanding of a codebase.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -120,11 +122,11 @@ class RAPIDServer:
                     },
                     "compactness_level": {
                         "type": "integer",
-                        "description": "Controls output verbosity: 0 (ultra-compact), 1 (compact), 2 (medium), 3 (detailed). Default is 1."
+                        "description": "Controls output verbosity: 0 (ultra-compact summary), 1 (compact, default), 2 (medium detail), 3 (highly detailed with full code snippets). Choose based on the level of detail required."
                     },
                     "include_descriptions": {
                         "type": "boolean",
-                        "description": "Whether to include function and file descriptions. Default is true."
+                        "description": "Set to true to include AI-generated summaries for files and major code structures (functions, classes). False provides raw code structure only."
                     },
                     "debug": {
                         "type": "boolean",
@@ -136,11 +138,11 @@ class RAPIDServer:
             }
         )
 
-    def _get_concept_search_tool_definition(self) -> types.Tool:
-        """Returns the definition for the 'concept_search' tool."""
+    def _get_project_find_code_by_concept_tool_definition(self) -> types.Tool:
+        """Returns the definition for the 'project_find_code_by_concept' tool."""
         return types.Tool(
-            name="concept_search",
-            description="Perform a semantic search for functions based on a natural language query.",
+            name="find_code_by_concept",
+            description="Performs a powerful semantic search across the codebase to find functions or code blocks related to a natural language query. Instead of exact string matching, it understands the *intent* behind the query to locate relevant functionality. Useful for discovering how specific concepts are implemented or finding code when you don't know the exact names or terms.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -150,7 +152,7 @@ class RAPIDServer:
                     },
                     "query": {
                         "type": "string",
-                        "description": "A natural language description of the functionality to find."
+                        "description": "A natural language description of the functionality or concept you are searching for (e.g., 'how user authentication is handled', 'function to parse JSON data')."
                     },
                     "extensions": {
                         "type": "array",
@@ -180,11 +182,11 @@ class RAPIDServer:
     ) -> List[types.TextContent]:
         """Handles tool calls from the client."""
         try:
-            if name == "get_full_context":
+            if name == "get_full_code_context":
                 result = await get_full_context_impl(arguments or {})
-            elif name == "project_wide_search":
+            elif name == "find_string":
                 result = await project_wide_search_impl(arguments or {})
-            elif name == "concept_search":
+            elif name == "find_code_by_concept":
                 result = await concept_search_impl(arguments or {})
             else:
                 result = {"status": "error", "error": f"Unknown tool: {name}"}

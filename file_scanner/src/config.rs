@@ -61,7 +61,7 @@ pub fn get_query(extension: &str, compactness: u8) -> Option<String> {
                 }).collect::<Vec<_>>().join("\n"),
             }
         }
-        _ => return None, // Extension not supported
+        _ => return None,
     };
     Some(query_str)
 }

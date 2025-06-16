@@ -1,107 +1,84 @@
-import json
-import sys  # Keep for sys.stderr if any debug prints are desired, otherwise remove
+import sys
 from pathlib import Path
 from typing import List, Dict, Any
 
-# Import the new direct invocation function
-from logic.rust_adapter import invoke_rust_scanner, invoke_rust_searcher, invoke_rust_concept_searcher
+# Import from the new consolidated FFI module
+from logic.ffi import invoke_scan_and_parse, invoke_project_wide_search, invoke_concept_search
 
 
 def collect_and_parse_files_from_rust(
     project_path: Path, extensions: List[str], compactness_level: int, timeout: int, debug: bool = False
 ) -> Dict[str, Any]:
     """
-    Calls the Rust library directly to perform a high-speed scan.
+    Calls the FFI layer to perform a high-speed scan.
+    'timeout' is in seconds.
     """
-    timeout_rust_ms = timeout * 1000
-
-    # Prepare arguments for the direct call
-    project_path_str = str(project_path)
-    extensions_str = ",".join(extensions)
-
-    # sys.stderr.write(
-    #     f"[FileCollection] Direct Call: Calling invoke_rust_scanner with path='{project_path_str}', "
-    #     f"ext='{extensions_str}', compact={compactness_level}, timeout_ms={timeout_rust_ms}\n"
-    # )
-    # sys.stderr.flush()
+    if debug:
+        # Example of a debug log specific to this layer, if needed.
+        # sys.stderr.write(f"[FileCollection] Calling invoke_scan_and_parse: path='{str(project_path)}', ext={extensions}, compact={compactness_level}, timeout_sec={timeout}\n")
+        # sys.stderr.flush()
+        pass
 
     try:
-        # Direct call to the refactored rust_adapter function
-        raw_result = invoke_rust_scanner(
-            project_path_str=project_path_str,
-            extensions_str=extensions_str,
+        raw_result = invoke_scan_and_parse(
+            project_path=str(project_path),
+            extensions=extensions,  # Pass list directly
             compactness_level=compactness_level,
-            timeout_ms=timeout_rust_ms,
+            timeout_sec=timeout,    # Pass timeout in seconds
             debug=debug
         )
 
-        # Process the result from invoke_rust_scanner
-        # invoke_rust_scanner returns a dict, which might be an error dict or the parsed JSON from Rust.
-
+        # The ffi.py layer now handles initial error checking (lib load, null ptr, json decode)
+        # and includes its own debug logs. We primarily process the structured result.
         if "error" in raw_result:
-            # This means invoke_rust_scanner itself had an error (e.g., DLL not found, load error, JSON parse error from Rust output)
+            # Error from FFI layer (e.g., lib not found, FFI call issue, JSON parse error)
             return {
-                # Should be empty on error
+                # Default to empty
                 "file_contexts": raw_result.get("file_contexts", []),
-                "debug_log": raw_result.get("debug_log", [f"Error from invoke_rust_scanner: {raw_result['error']}"]),
-                "status": "error_adapter_call",  # General error status for adapter issues
-                "error": raw_result['error'],
-                "timed_out": False,  # This specific error is not a timeout of the scan itself
-                "timed_out_internally": False
+                "debug_log": raw_result.get("debug_log", [f"Error from FFI invoke_scan_and_parse: {raw_result.get('error', 'Unknown FFI error')}"]),
+                # Use status from FFI if available
+                "status": raw_result.get("status", "error_ffi_call"),
+                "error": raw_result.get('error', 'Unknown FFI error'),
+                # FFI layer itself doesn't set this; Rust layer might.
+                "timed_out": False,
+                # Pass through from Rust
+                "timed_out_internally": raw_result.get("timed_out_internally", False)
             }
 
-        # If no "error" key, raw_result is the parsed JSON data from the Rust library
-        # The Rust library's output structure is expected here.
-        # It should include 'file_contexts', 'debug_log', and potentially 'timed_out_internally'.
-
-        file_contexts = raw_result.get("file_contexts", [])
-        debug_log = raw_result.get("debug_log", [])
-
-        # Check if the Rust library reported an internal timeout
+        # If no "error" key from FFI, raw_result is the parsed JSON data from Rust.
+        # It should include 'file_contexts', 'debug_log', and 'timed_out_internally'.
         timed_out_internally = raw_result.get("timed_out_internally", False)
-
         status = "success"
         if timed_out_internally:
             status = "success_partial_internal_timeout"
-            # If Rust timed out, it should also provide files_processed_before_timeout
-            # This key needs to be consistent with what tool_implementations.py expects
-            # Add it to raw_result if not already there, or ensure it's named correctly.
             if "files_processed_before_timeout" not in raw_result:
-                # If Rust doesn't provide this, we might infer it from len(file_contexts)
-                # but it's better if Rust provides it. For now, assume it might be missing.
+                # This field should ideally come from Rust if it times out internally.
                 raw_result["files_processed_before_timeout"] = len(
-                    file_contexts)
+                    raw_result.get("file_contexts", []))
 
-        # The overall 'timed_out' flag for collect_and_parse_files_from_rust
-        # will be true if the Rust library itself reported an internal timeout.
-        # There's no longer a separate Python-level "external" timeout for the subprocess.
-        final_timed_out_flag = timed_out_internally
-
-        # Construct the final dictionary to be returned, ensuring all expected keys by tool_implementations.py are present.
-        # Merge raw_result (which is the data from Rust) with our status and timeout flags.
         final_result = {
-            **raw_result,  # This includes file_contexts, debug_log, and any Rust-specific fields
+            # Includes file_contexts, debug_log from Rust (already merged with FFI logs)
+            **raw_result,
             "status": status,
-            "timed_out": final_timed_out_flag,  # True if Rust internally timed out
-            "timed_out_internally": timed_out_internally  # Explicitly from Rust
+            # Overall timeout is true if Rust internally timed out
+            "timed_out": timed_out_internally,
         }
-        # Ensure 'error' key is not present if successful
-        if "error" in final_result and status.startswith("success"):
+        # Ensure 'error' key is not present if successful, unless Rust itself reported an error field.
+        # if ffi.py didn't set it
+        if status.startswith("success") and "error" in final_result and not raw_result.get("error"):
             del final_result["error"]
 
         return final_result
 
     except Exception as ex:
-        # Catch-all for unexpected errors during the direct call to invoke_rust_scanner
-        # or during the processing of its result.
+        # Catch-all for unexpected errors within this file_collection.py layer
         return {
             "file_contexts": [],
-            "debug_log": [f"Critical error in collect_and_parse_files_from_rust (direct call): {ex}"],
+            "debug_log": [f"Critical error in collect_and_parse_files_from_rust: {ex}"],
             "status": "error_file_collection_critical",
             "error": str(ex),
-            # Assume a critical failure might be related to timeout or causes one effectively
-            "timed_out": True,
-            "timed_out_internally": False  # Cannot determine this if Python code fails
+            "timed_out": True,  # Assume timeout or related failure
+            "timed_out_internally": False
         }
 
 
@@ -109,44 +86,40 @@ def search_in_files_from_rust(
     project_path: Path, search_string: str, extensions: List[str], context_lines: int, timeout: int, debug: bool = False
 ) -> Dict[str, Any]:
     """
-    Calls the Rust library to perform a project-wide search.
+    Calls the FFI layer to perform a project-wide search.
+    'timeout' is in seconds.
     """
-    timeout_rust_ms = timeout * 1000
-    project_path_str = str(project_path)
-    extensions_str = ",".join(extensions)
-
     try:
-        raw_result = invoke_rust_searcher(
-            project_path_str=project_path_str,
+        raw_result = invoke_project_wide_search(
+            project_path=str(project_path),
             search_string=search_string,
-            extensions_str=extensions_str,
+            extensions=extensions,  # Pass list directly
             context_lines=context_lines,
-            timeout_ms=timeout_rust_ms,
+            timeout_sec=timeout,   # Pass timeout in seconds
             debug=debug
         )
 
         if "error" in raw_result:
-            # Preserve debug_log from adapter if it exists, even on error
-            error_response = {
-                "status": "error_adapter_call",
-                "error": raw_result['error'],
-                "results": [],
-                "stats": {}
+            # Error from FFI layer
+            return {
+                "results": raw_result.get("results", []),  # Default to empty
+                "stats": raw_result.get("stats", {}),     # Default to empty
+                "debug_log": raw_result.get("debug_log", [f"Error from FFI invoke_project_wide_search: {raw_result.get('error', 'Unknown FFI error')}"]),
+                "status": raw_result.get("status", "error_ffi_call"),
+                "error": raw_result.get('error', 'Unknown FFI error'),
             }
-            if "debug_log" in raw_result:
-                error_response["debug_log"] = raw_result["debug_log"]
-            return error_response
 
+        # If no "error" from FFI, raw_result is the parsed JSON from Rust.
+        # It should include 'results', 'stats', 'debug_log'.
         return raw_result
 
     except Exception as ex:
         return {
-            "status": "error_file_collection_critical",
-            "error": str(ex),
             "results": [],
             "stats": {},
-            # Add a debug log for this critical failure path
-            "debug_log": [f"Critical error in concept_search_from_rust: {ex}"]
+            "debug_log": [f"Critical error in search_in_files_from_rust: {ex}"],
+            "status": "error_file_collection_critical",
+            "error": str(ex),
         }
 
 
@@ -154,45 +127,60 @@ def concept_search_from_rust(
     project_path: Path, query: str, extensions: List[str], top_n: int, timeout: int, debug: bool = False
 ) -> Dict[str, Any]:
     """
-    Calls the Rust library to perform a concept search.
+    Calls the FFI layer to perform a concept search.
+    'timeout' is in seconds.
     """
-    timeout_rust_ms = timeout * 1000
-    project_path_str = str(project_path)
-    # Extensions for concept search are passed as a JSON string list to the rust_adapter,
-    # which then passes it as a C string to Rust FFI.
-    # The FFI layer in Rust (file_scanner/src/ffi.rs) expects a JSON string for extensions for concept_search.
-    extensions_json_str = json.dumps(extensions)
+    fc_debug_logs: List[str] = []
+    if debug:
+        fc_debug_logs.append(
+            f"[FileCollection | concept_search] Called. Debug: {debug}, Path: {project_path}, Query: {query[:50]}...")
 
     try:
-        raw_result = invoke_rust_concept_searcher(
-            project_path_str=project_path_str,
-            query_str=query,
-            extensions_str=extensions_json_str,  # Use JSON string here
+        # Extensions are passed as a list; ffi.py handles JSON conversion for concept_search
+        raw_result = invoke_concept_search(
+            project_path=str(project_path),
+            query=query,
+            extensions=extensions,  # Pass list directly
             top_n=top_n,
-            timeout_ms=timeout_rust_ms,
+            timeout_sec=timeout,   # Pass timeout in seconds
             debug=debug
         )
 
-        if "error" in raw_result:
-            # Preserve debug_log from adapter if it exists, even on error
-            error_response = {
-                "status": "error_adapter_call",
-                "error": raw_result['error'],
-                "results": [],
-                "stats": {}
-            }
-            if "debug_log" in raw_result:
-                error_response["debug_log"] = raw_result["debug_log"]
-            return error_response
+        # ffi.py's invoke_concept_search already handles merging its debug logs
+        # with Rust's logs, and also the special status override logic.
 
+        # Prepend file_collection specific logs if any
+        if debug:
+            existing_debug_logs = raw_result.get("debug_log", [])
+            if not isinstance(existing_debug_logs, list):  # Should be a list from ffi.py
+                existing_debug_logs = [
+                    str(existing_debug_logs)] if existing_debug_logs is not None else []
+            raw_result["debug_log"] = fc_debug_logs + existing_debug_logs
+
+        # Check if FFI or Rust reported an error that isn't overridden to success
+        if "error" in raw_result and not raw_result.get("status", "").startswith("success"):
+            return {
+                # Default to empty string as per original
+                "results": raw_result.get("results", ""),
+                "stats": raw_result.get("stats", {}),
+                "debug_log": raw_result.get("debug_log", [f"Error from FFI invoke_concept_search: {raw_result.get('error', 'Unknown FFI error')}"]),
+                "status": raw_result.get("status", "error_ffi_call"),
+                "error": raw_result.get('error', 'Unknown FFI error'),
+            }
+
+        # If no "error" from FFI (or if it was a "success_with_rust_reported_issue"),
+        # raw_result is the (potentially modified by ffi.py) data from Rust.
         return raw_result
 
     except Exception as ex:
+        critical_error_msg = f"Critical error in concept_search_from_rust: {ex}"
+        if debug:
+            fc_debug_logs.append(critical_error_msg)
+
         return {
-            "status": "error_file_collection_critical",
-            "error": str(ex),
-            "results": [],
+            "results": "",  # Default to empty string
             "stats": {},
-            # Add a debug log for this critical failure path
-            "debug_log": [f"Critical error in concept_search_from_rust: {ex}"]
+            "debug_log": fc_debug_logs,
+            "status": "error_file_collection_critical",
+            "error": critical_error_msg,
         }

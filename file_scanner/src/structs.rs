@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FunctionInfo {
@@ -72,4 +73,10 @@ pub struct ConceptSearchServiceResult {
 pub struct ConceptSearchStats {
     pub functions_analyzed: usize,
     pub search_duration_seconds: f32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CachedFileEmbeddings {
+    pub file_content_hash: String,
+    pub function_embeddings: HashMap<String, Vec<f32>>, // Function name -> embedding vector
 }
