@@ -115,8 +115,6 @@ def _invoke_ffi_function(
 
         if not result_ptr:
             # Rust function returned a null pointer.
-            # It's crucial that free_string can handle NULL, or this line is conditional.
-            # Assuming free_string is robust to NULL.
             rust_lib.free_string(result_ptr)  # type: ignore
             error_msg = f"Rust function '{rust_fn_name}' returned a null pointer."
             if debug:

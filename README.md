@@ -29,27 +29,72 @@ This hybrid approach combines the flexibility of Python for the server logic wit
 
 The server exposes the following tools:
 
-### `get_full_context`
+### `initialize_project_context`
 
-Scans a project directory and returns a structured overview of the codebase.
+Initializes project context by reading/creating `plan.md` and provides a complexity assessment with guidance for interacting with the codebase. This should be the first tool called when starting work on a project.
 
 **Arguments:**
 
 -   `path` (string, required): The absolute path to the project directory.
--   `extensions` (array of strings, optional): A list of file extensions to include in the scan.
--   `max_depth` (integer, optional): The maximum depth to scan directories.
--   `compactness_level` (integer, optional): Controls the verbosity of the output.
+-   `timeout` (integer, optional): Timeout in seconds for the initial scan. Default is 10.
+-   `debug` (boolean, optional): Whether to include the debug log in the output. Defaults to false.
 
-### `project_wide_search`
+**Output Structure (Example):**
+```json
+{
+  "status": "success",
+  "plan_md_content": "# Project Plan...",
+  "project_assessment": {
+    "file_count": 42,
+    "complexity_level": "Small",
+    "guidance": "Project is small (20-75 files)..."
+  },
+  "stats": {
+    "complexity_scan_duration_seconds": 0.05,
+    "files_counted_for_complexity": 42
+  }
+}
+```
 
-Performs a project-wide search for a given string.
+### `get_full_code_context`
+
+Comprehensively scans a project directory to extract and structure code from specified file types. Generates a detailed overview of the project's content, including file structures and optionally, function/class descriptions. Essential for gaining a holistic understanding of a codebase.
+
+**Arguments:**
+
+-   `path` (string, required): The absolute path to the project directory.
+-   `extensions` (array of strings, optional): A list of file extensions to include in the scan (e.g., `[".py", ".rs"]`).
+-   `max_depth` (integer, optional): The maximum depth to scan directories. Default is 6.
+-   `compactness_level` (integer, optional): Controls output verbosity: 0 (ultra-compact summary), 1 (compact, default), 2 (medium detail), 3 (highly detailed with full code snippets).
+-   `timeout` (integer, optional): Timeout in seconds for the operation. Default is 60.
+-   `debug` (boolean, optional): Whether to include the debug log in the output. Defaults to false.
+
+
+### `find_string`
+
+Efficiently searches all files within a specified project directory for an exact string or pattern. Ideal for locating specific code snippets, configurations, or mentions across the entire codebase. Returns matches with surrounding context lines.
 
 **Arguments:**
 
 -   `path` (string, required): The absolute path to the project directory.
 -   `search_string` (string, required): The string to search for.
 -   `extensions` (array of strings, optional): A list of file extensions to search in.
--   `context_lines` (integer, optional): The number of context lines to include in the search results.
+-   `context_lines` (integer, optional): The number of context lines to include around each match. Default is 2.
+-   `timeout` (integer, optional): Timeout in seconds for the operation. Default is 60.
+-   `debug` (boolean, optional): Whether to include the debug log in the output. Defaults to false.
+
+### `find_code_by_concept`
+
+Performs a powerful semantic search across the codebase to find functions or code blocks related to a natural language query. Instead of exact string matching, it understands the *intent* behind the query to locate relevant functionality. Useful for discovering how specific concepts are implemented or finding code when you don't know the exact names or terms.
+
+**Arguments:**
+
+-   `path` (string, required): The absolute path to the project directory.
+-   `query` (string, required): A natural language description of the functionality or concept you are searching for (e.g., "how user authentication is handled").
+-   `extensions` (array of strings, optional): File extensions to scan. Defaults to common code extensions.
+-   `top_n` (integer, optional): Number of top results to return. Default is 10.
+-   `timeout` (integer, optional): Timeout in seconds for the operation. Default is 20.
+-   `debug` (boolean, optional): Whether to include the debug log in the output. Defaults to false.
 
 ## Getting Started
 

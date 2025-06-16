@@ -14,7 +14,12 @@ from mcp.server.models import InitializationOptions
 import mcp.server.stdio
 import mcp.types as types
 
-from logic.tool_implementations import get_full_context_impl, project_wide_search_impl, concept_search_impl
+from logic.tool_implementations import (
+    get_full_context_impl,
+    project_wide_search_impl,
+    concept_search_impl,
+    initialize_project_context_impl
+)
 
 
 class RAPIDServer:
@@ -39,10 +44,38 @@ class RAPIDServer:
     async def list_tools(self) -> List[types.Tool]:
         """Lists the available tools."""
         return [
+            self._get_initialize_project_context_tool_definition(),  # Added new tool
             self._get_project_full_code_context_tool_definition(),
             self._get_project_find_string_tool_definition(),
             self._get_project_find_code_by_concept_tool_definition(),
         ]
+
+    def _get_initialize_project_context_tool_definition(self) -> types.Tool:
+        """Returns the definition for the 'initialize_project_context' tool."""
+        return types.Tool(
+            name="initialize_project_context",
+            description="Initializes project context by reading/creating plan.md and provides a complexity assessment with guidance for interacting with the codebase. This should be the first tool called when starting work on a project.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute path to the project directory."
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Timeout in seconds for the initial scan. Default is 10.",
+                        "default": 10
+                    },
+                    "debug": {
+                        "type": "boolean",
+                        "description": "Whether to include the debug log in the output. Defaults to false.",
+                        "default": False
+                    }
+                },
+                "required": ["path"]
+            }
+        )
 
     def _get_project_find_string_tool_definition(self) -> types.Tool:
         """Returns the definition for the 'project_find_string' tool."""
@@ -124,10 +157,6 @@ class RAPIDServer:
                         "type": "integer",
                         "description": "Controls output verbosity: 0 (ultra-compact summary), 1 (compact, default), 2 (medium detail), 3 (highly detailed with full code snippets). Choose based on the level of detail required."
                     },
-                    "include_descriptions": {
-                        "type": "boolean",
-                        "description": "Set to true to include AI-generated summaries for files and major code structures (functions, classes). False provides raw code structure only."
-                    },
                     "debug": {
                         "type": "boolean",
                         "description": "Whether to include the debug log in the output. Defaults to false.",
@@ -180,18 +209,47 @@ class RAPIDServer:
     async def call_tool(
         self, name: str, arguments: Optional[Dict[str, Any]]
     ) -> List[types.TextContent]:
-        """Handles tool calls from the client."""
+        """Handles tool calls from the client. All tools now return a dictionary
+        with 'text_output' and optionally 'debug_log_for_text_output'."""
         try:
+            tool_function = None
             if name == "get_full_code_context":
-                result = await get_full_context_impl(arguments or {})
+                tool_function = get_full_context_impl
             elif name == "find_string":
-                result = await project_wide_search_impl(arguments or {})
+                tool_function = project_wide_search_impl
             elif name == "find_code_by_concept":
-                result = await concept_search_impl(arguments or {})
+                tool_function = concept_search_impl
+            elif name == "initialize_project_context":
+                tool_function = initialize_project_context_impl
             else:
-                result = {"status": "error", "error": f"Unknown tool: {name}"}
+                # Handle unknown tool by creating a compatible error dict
+                tool_result_dict = {
+                    "status": "error_text_output",  # Consistent status for text output
+                    "text_output": f"--- Error ---\nUnknown tool: {name}"
+                }
+                # No debug log to append for an unknown tool error
+                return [types.TextContent(type="text", text=tool_result_dict["text_output"])]
 
-            return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
+            if tool_function:
+                tool_result_dict = await tool_function(arguments or {})
+            else:  # Should not be reached if logic above is correct, but as a safeguard
+                tool_result_dict = {
+                    "status": "error_text_output",
+                    "text_output": f"--- Error ---\nTool function for '{name}' not found internally."
+                }
+
+            text_to_return = tool_result_dict.get(
+                "text_output", f"Error: No text_output from tool '{name}'.")
+
+            # Append debug log if present and if the original tool call requested debug mode
+            tool_args_debug = (arguments or {}).get("debug", False)
+            if tool_args_debug and "debug_log_for_text_output" in tool_result_dict:
+                # debug_log_for_text_output is now expected to be a pre-formatted string
+                debug_log_str = tool_result_dict["debug_log_for_text_output"]
+                if debug_log_str:  # Only append if not empty
+                    text_to_return += "\n\n--- Debug Log ---\n" + debug_log_str
+
+            return [types.TextContent(type="text", text=text_to_return)]
 
         except Exception as e:
             error_info = {
