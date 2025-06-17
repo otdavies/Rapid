@@ -65,6 +65,7 @@ Comprehensively scans a project directory to extract and structure code from spe
 -   `path` (string, required): The absolute path to the project directory.
 -   `extensions` (array of strings, optional): A list of file extensions to include in the scan (e.g., `[".py", ".rs"]`).
 -   `max_depth` (integer, optional): The maximum depth to scan directories. Default is 6.
+-   `max_files` (integer, optional): Maximum number of files to process. Default is 1000.
 -   `compactness_level` (integer, optional): Controls output verbosity: 0 (ultra-compact summary), 1 (compact, default), 2 (medium detail), 3 (highly detailed with full code snippets).
 -   `timeout` (integer, optional): Timeout in seconds for the operation. Default is 60.
 -   `debug` (boolean, optional): Whether to include the debug log in the output. Defaults to false.
@@ -79,6 +80,8 @@ Efficiently searches all files within a specified project directory for an exact
 -   `path` (string, required): The absolute path to the project directory.
 -   `search_string` (string, required): The string to search for.
 -   `extensions` (array of strings, optional): A list of file extensions to search in.
+-   `max_depth` (integer, optional): Maximum depth to scan directories. Default is 6.
+-   `max_files` (integer, optional): Maximum number of files to process. Default is 1000.
 -   `context_lines` (integer, optional): The number of context lines to include around each match. Default is 2.
 -   `timeout` (integer, optional): Timeout in seconds for the operation. Default is 60.
 -   `debug` (boolean, optional): Whether to include the debug log in the output. Defaults to false.
