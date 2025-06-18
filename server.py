@@ -54,7 +54,20 @@ class RAPIDServer:
         """Returns the definition for the 'initialize_project_context' tool."""
         return types.Tool(
             name="initialize_project_context",
-            description="Initializes project context by reading/creating plan.md and provides a complexity assessment with guidance for interacting with the codebase. This should be the first tool called when starting work on a project.",
+            description="""
+Initializes project context by reading/creating plan.md.
+
+This tool is the critical first step for interacting with a project. It establishes a shared understanding
+of the project's goals and status by reading the `plan.md` file.
+
+**You must adhere to the following protocol:**
+1.  **Always call this tool first** before taking any other action in a project.
+2.  **Carefully read the entire output**, especially the contents of `plan.md`.
+3.  **Preserve and update `plan.md`:** As you complete tasks, update this file to reflect the current
+    project status. It is the single source of truth for project planning.
+
+The tool also provides a lightweight complexity assessment to guide your next steps.
+""",
             inputSchema={
                 "type": "object",
                 "properties": {

@@ -36,8 +36,18 @@ def _format_stats_for_text_output(stats_dict: Dict[str, Any], title: str = "Stat
 
 async def initialize_project_context_impl(args: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Initializes project context by reading/creating plan.md and provides a complexity assessment.
-    Output is formatted as a plain text string.
+    Initializes project context by reading/creating plan.md.
+
+    This tool is the critical first step for interacting with a project. It establishes a shared understanding
+    of the project's goals and status by reading the `plan.md` file.
+
+    **You must adhere to the following protocol:**
+    1.  **Always call this tool first** before taking any other action in a project.
+    2.  **Carefully read the entire output**, especially the contents of `plan.md`.
+    3.  **Preserve and update `plan.md`:** As you complete tasks, update this file to reflect the current
+        project status. It is the single source of truth for project planning.
+
+    The tool also provides a lightweight complexity assessment to guide your next steps.
     """
     input_path_str = args["path"]
     project_path = Path(input_path_str)
@@ -87,6 +97,7 @@ async def initialize_project_context_impl(args: Dict[str, Any]) -> Dict[str, Any
     file_count = 0
     complexity_level = "Unknown"
     guidance = "Could not determine project complexity due to an issue."
+    context_compactness_level = -1  # Initialize here to ensure it's always bound
     scan_start_time = time.time()
     scan_successful = False
     rust_call_error_message = ""
@@ -132,20 +143,23 @@ async def initialize_project_context_impl(args: Dict[str, Any]) -> Dict[str, Any
 
             if file_count < 10:
                 complexity_level = "Trivial"
-                guidance = "Project is trivial (less than 10 files). Direct file examination and `get_full_code_context` (low compactness) are likely sufficient for understanding."
+                guidance = "Project is trivial (<10 files). Full context is provided below."
+                context_compactness_level = 2
             elif file_count < 30:
                 complexity_level = "Small"
-                guidance = "Project is small (10-29 files). Use `get_full_code_context` for an overview. `find_string` can be useful for targeted searches."
+                guidance = "Project is small (10-29 files). A project overview is provided below."
+                context_compactness_level = 1
             elif file_count < 150:
                 complexity_level = "Medium"
-                guidance = "Project is medium-sized (30-149 files). Rely on `get_full_code_context` for initial understanding. Prioritize `find_string` and `find_code_by_concept` to locate relevant areas before reading files extensively."
+                guidance = "Project is medium (30-149 files). A high-level summary is provided below. Use `find_string` or `find_code_by_concept` for detailed exploration."
+                context_compactness_level = 0
             else:
                 complexity_level = "Large"
-                guidance = "Project is large (150+ files). Heavily prioritize `find_code_by_concept` and `find_string` for navigation. Use `get_full_code_context` selectively, possibly on subdirectories, or with higher compactness levels to manage output size. Avoid reading files without a clear target."
+                guidance = "Project is large (150+ files). Use `find_code_by_concept` and `find_string` to navigate the codebase. You can run `get_full_code_context` on specific subdirectories if needed."
+
             if debug_mode:
                 debug_log_internal.append(
                     f"Determined complexity: {complexity_level} with {file_count} files.")
-
     except Exception as e:
         rust_call_error_message = f"Exception during project scan for complexity: {e}"
         guidance = rust_call_error_message
@@ -164,6 +178,39 @@ async def initialize_project_context_impl(args: Dict[str, Any]) -> Dict[str, Any
         f"Complexity Level: {complexity_level}",
         f"Guidance: {guidance}",
     ]
+
+    # 3. Automatically provide context if complexity is not "Large"
+    if 'context_compactness_level' in locals() and context_compactness_level != -1:
+        try:
+            # Re-use the get_full_context_impl logic
+            context_args = {
+                "path": input_path_str,
+                "compactness_level": context_compactness_level,
+                "debug": debug_mode,
+                # Use a slightly longer timeout for the real context scan
+                "timeout": args.get("timeout", 20)
+            }
+            if debug_mode:
+                debug_log_internal.append(
+                    f"Auto-fetching context with compactness: {context_compactness_level}")
+
+            # We call the implementation directly
+            context_result = await get_full_context_impl(context_args)
+
+            if "text_output" in context_result:
+                output_lines.append("\n--- Project Context ---")
+                output_lines.append(context_result["text_output"])
+            if debug_mode and "debug_log_for_text_output" in context_result:
+                debug_log_internal.append(
+                    "\n--- Debug Log from get_full_context_impl ---")
+                debug_log_internal.append(
+                    context_result["debug_log_for_text_output"])
+
+        except Exception as e:
+            output_lines.append(f"\n--- Error Auto-Fetching Context ---\n{e}")
+            if debug_mode:
+                debug_log_internal.append(f"Error during auto-fetch: {e}")
+
     output_lines.append(_format_stats_for_text_output(
         response_stats, "Initialization Stats"))
 
