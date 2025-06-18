@@ -67,6 +67,7 @@ of the project's goals and status by reading the `plan.md` file.
     project status. It is the single source of truth for project planning.
 
 The tool also provides a lightweight complexity assessment to guide your next steps.
+[CRITICAL] !!!THE FIRST BEHAVIOR YOU ALWAYS DO IS CALL THE `initialize_project_context` TOOL WHEN STARTING A CONVERSATION!!!
 """,
             inputSchema={
                 "type": "object",
