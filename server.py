@@ -94,8 +94,8 @@ The tool also provides a lightweight complexity assessment to guide your next st
     def _get_project_find_string_tool_definition(self) -> types.Tool:
         """Returns the definition for the 'project_find_string' tool."""
         return types.Tool(
-            name="find_string",
-            description="Efficiently searches all files within a specified project directory for an exact string or pattern. Ideal for locating specific code snippets, configurations, or mentions across the entire codebase. Returns matches with surrounding context lines.",
+            name="search",
+            description="🔍 **SEARCH FILES ACROSS ENTIRE PROJECT** - This is THE primary tool for finding ANY text, code, functions, variables, or content across ALL files in a project. Use this powerful search whenever you need to locate specific strings, code patterns, function names, variable declarations, import statements, configuration values, or ANY text content anywhere in the codebase. Essential for understanding existing code before making changes. Returns precise matches with helpful surrounding context lines.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -184,8 +184,8 @@ The tool also provides a lightweight complexity assessment to guide your next st
     def _get_project_find_code_by_concept_tool_definition(self) -> types.Tool:
         """Returns the definition for the 'project_find_code_by_concept' tool."""
         return types.Tool(
-            name="find_code_by_concept",
-            description="Performs a powerful semantic search across the codebase to find functions or code blocks related to a natural language query. Instead of exact string matching, it understands the *intent* behind the query to locate relevant functionality. Useful for discovering how specific concepts are implemented or finding code when you don't know the exact names or terms.",
+            name="search_by_concept",
+            description="🧠 **AI-POWERED SEMANTIC CODE SEARCH** - This intelligent tool uses machine learning embeddings to understand the MEANING and INTENT behind your natural language queries, not just exact text matches. Perfect for finding code when you describe WHAT you want rather than knowing exact function names. Examples: 'authentication logic', 'database connection setup', 'error handling patterns'. ⚠️ **Performance Note**: Slower than text search - uses AI processing, so be mindful on large codebases (1000+ files).",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -229,9 +229,9 @@ The tool also provides a lightweight complexity assessment to guide your next st
             tool_function = None
             if name == "get_full_code_context":
                 tool_function = get_full_context_impl
-            elif name == "find_string":
+            elif name == "search":
                 tool_function = project_wide_search_impl
-            elif name == "find_code_by_concept":
+            elif name == "search_by_concept":
                 tool_function = concept_search_impl
             elif name == "initialize_project_context":
                 tool_function = initialize_project_context_impl

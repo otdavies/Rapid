@@ -70,9 +70,9 @@ Comprehensively scans a project directory to extract and structure code from spe
 -   `debug` (boolean, optional): Whether to include the debug log in the output. Defaults to false.
 
 
-### `find_string`
+### `search`
 
-Efficiently searches all files within a specified project directory for an exact string or pattern. Ideal for locating specific code snippets, configurations, or mentions across the entire codebase. Returns matches with surrounding context lines.
+🔍 **SEARCH FILES ACROSS ENTIRE PROJECT** - This is THE primary tool for finding ANY text, code, functions, variables, or content across ALL files in a project. Use this powerful search whenever you need to locate specific strings, code patterns, function names, variable declarations, import statements, configuration values, or ANY text content anywhere in the codebase. Essential for understanding existing code before making changes. Returns precise matches with helpful surrounding context lines.
 
 **Arguments:**
 
@@ -85,9 +85,9 @@ Efficiently searches all files within a specified project directory for an exact
 -   `timeout` (integer, optional): Timeout in seconds for the operation. Default is 60.
 -   `debug` (boolean, optional): Whether to include the debug log in the output. Defaults to false.
 
-### `find_code_by_concept`
+### `search_by_concept`
 
-Performs a powerful semantic search across the codebase to find functions or code blocks related to a natural language query. Instead of exact string matching, it understands the *intent* behind the query to locate relevant functionality. Useful for discovering how specific concepts are implemented or finding code when you don't know the exact names or terms.
+🧠 **AI-POWERED SEMANTIC CODE SEARCH** - This intelligent tool uses machine learning embeddings to understand the MEANING and INTENT behind your natural language queries, not just exact text matches. Perfect for finding code when you describe WHAT you want rather than knowing exact function names. Examples: 'authentication logic', 'database connection setup', 'error handling patterns'. ⚠️ **Performance Note**: Slower than text search - uses AI processing, so be mindful on large codebases (1000+ files).
 
 **Arguments:**
 
