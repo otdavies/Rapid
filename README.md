@@ -100,21 +100,60 @@ Performs a powerful semantic search across the codebase to find functions or cod
 
 ## Getting Started
 
-1.  **Install Dependencies:**
+This guide provides step-by-step instructions to get the R.A.P.I.D. server up and running on your local machine.
+
+### Prerequisites
+
+Before you proceed, make sure you have the following software installed:
+
+-   **Git:** For cloning the source code. You can download it from [git-scm.com](https://git-scm.com/).
+-   **Python (3.8+):** The core server is written in Python. You can get it from [python.org](https://www.python.org/).
+-   **Rust:** The high-performance file scanner is built with Rust. The recommended installation method is `rustup` from [rust-lang.org](https://www.rust-lang.org/tools/install).
+
+### Installation Steps
+
+1.  **Clone the Repository**
+
+    Open your terminal, navigate to your desired directory, and clone the repository:
     ```bash
+    git clone https://github.com/otdavies/Rapid.git
+    cd Rapid
+    ```
+    *Note: Replace the URL with the actual URL of this repository.*
+
+2.  **Set Up Python Environment**
+
+    It's best practice to use a virtual environment to avoid conflicts with other projects.
+
+    ```bash
+    # Create a virtual environment
+    python -m venv venv
+
+    # Activate it
+    # On Windows:
+    # venv\Scripts\activate
+    # On macOS/Linux:
+    # source venv/bin/activate
+
+    # Install dependencies
     pip install -r requirements.txt
     ```
 
-2.  **Build the Rust Scanner:**
+3.  **Build the Rust Scanner**
+
+    Compile the Rust library, which handles the file scanning and parsing.
+
     ```bash
     cd file_scanner
     cargo build --release
     cd ..
     ```
 
-## Installation
+    Once these steps are complete, the server is ready to be configured with your client.
 
-To use this server, you need to register it with your MCP-compliant client (e.g., Claude for Desktop). This typically involves adding a configuration block to the client's settings file.
+## Client Configuration
+
+To use this server, you need to register it with your MCP-compliant client (e.g., an AI assistant in your IDE). This typically involves adding a configuration block to the client's settings file.
 
 Locate your MCP client's configuration file (often a `settings.json` or similar) and add the following entry to the `mcpServers` object. Make sure to replace `"your-path-here\\server.py"` with the absolute path to the `server.py` file in this project.
 
