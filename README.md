@@ -119,7 +119,6 @@ Before you proceed, make sure you have the following software installed:
     git clone https://github.com/otdavies/Rapid.git
     cd Rapid
     ```
-    *Note: Replace the URL with the actual URL of this repository.*
 
 2.  **Set Up Python Environment**
 
